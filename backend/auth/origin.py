@@ -14,7 +14,7 @@ from backend.security.origins import canonical_http_origin
 AUTH_REQUEST_BODY_LIMIT = 16 * 1024
 _AUTH_PATH_PREFIX = "/auth/"
 _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-_JSON_BODY_PATHS = frozenset({"/auth/login", "/auth/register"})
+_JSON_BODY_PATHS = frozenset({"/auth/supabase/exchange"})
 _NO_STORE_HEADERS = {
     "Cache-Control": "no-store",
     "Pragma": "no-cache",

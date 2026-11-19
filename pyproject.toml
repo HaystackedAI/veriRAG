@@ -77,6 +77,9 @@ supermew-registry = "backend.tools.registry_cli:main"
 include = ["backend*"]
 exclude = ["frontend*", "tests*"]
 
+[tool.setuptools.package-data]
+"backend.skills" = ["catalog/*/skill.yaml", "catalog/*/SKILL.md"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]

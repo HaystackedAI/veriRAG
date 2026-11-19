@@ -1,9 +1,8 @@
 from backend.schemas.auth import (
     AuthResponse,
     CurrentUserResponse,
-    LoginRequest,
     LogoutResponse,
-    RegisterRequest,
+    SupabaseExchangeRequest,
 )
 from backend.schemas.rag import (
     HitlResumeState,
@@ -39,8 +38,7 @@ from backend.schemas.threads import (
 )
 
 __all__ = [
-    "RegisterRequest",
-    "LoginRequest",
+    "SupabaseExchangeRequest",
     "AuthResponse",
     "CurrentUserResponse",
     "LogoutResponse",

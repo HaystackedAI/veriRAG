@@ -58,6 +58,9 @@ Server state、认证和长生命周期 timer 由 Store/专用 Module 拥有。�
 
 ## 浏览器认证
 
+- 注册/登录通过 Supabase Auth；浏览器只配置 `VITE_SUPABASE_URL` 与
+  `VITE_SUPABASE_PUBLISHABLE_KEY`，Supabase session 不持久化。后端 `/auth/supabase/exchange`
+  验证 Supabase 身份、按 `users.zid` 映射本地用户并签发应用会话；不得信任客户端提交的 role。
 - Access Token 只保存在 `auth/session.ts` 的内存状态，通过 `Authorization: Bearer` 使用。
 - 页面恢复调用 `/auth/refresh`，Refresh Token 只由 HttpOnly Cookie 携带。
 - 允许 `sessionStorage` 保存的只是“待撤销 tombstone”等非 credential 协调标志；不得保存 token。

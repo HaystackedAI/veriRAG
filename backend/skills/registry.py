@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
+import ntpath
 import os
 import re
 import stat
@@ -357,16 +359,180 @@ _OPEN_DIRECTORY_FLAGS = (
 _OPEN_FILE_FLAGS = (
     _OPEN_COMMON_FLAGS | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
 )
+_WINDOWS_REPARSE_POINT = 0x400
+_WINDOWS_DIRECTORY_ATTRIBUTE = 0x10
+_WINDOWS_OPEN_REPARSE_POINT = 0x00200000
+_WINDOWS_BACKUP_SEMANTICS = 0x02000000
+_WINDOWS_INVALID_HANDLE = ctypes.c_void_p(-1).value
+
+
+class _WindowsFileAttributeTagInfo(ctypes.Structure):
+    _fields_ = [
+        ("file_attributes", ctypes.c_uint32),
+        ("reparse_tag", ctypes.c_uint32),
+    ]
 
 
 def _require_secure_open_flags() -> None:
-    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+    if os.name != "nt" and (
+        not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW")
+    ):
         raise SkillRegistryError(
             "skill registry requires O_DIRECTORY and O_NOFOLLOW support"
         )
 
 
+def _windows_kernel32() -> Any:
+    if os.name != "nt":
+        raise OSError("Windows file handles are only available on Windows")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+    ]
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.GetFileInformationByHandleEx.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+    ]
+    kernel32.GetFileInformationByHandleEx.restype = ctypes.c_int
+    kernel32.GetFinalPathNameByHandleW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_wchar_p,
+        ctypes.c_uint32,
+        ctypes.c_uint32,
+    ]
+    kernel32.GetFinalPathNameByHandleW.restype = ctypes.c_uint32
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_int
+    return kernel32
+
+
+def _windows_raw_handle(path: str | Path) -> int:
+    kernel32 = _windows_kernel32()
+    handle = kernel32.CreateFileW(
+        str(path),
+        0x80000000,
+        0x1 | 0x2 | 0x4,
+        None,
+        3,
+        _WINDOWS_OPEN_REPARSE_POINT | _WINDOWS_BACKUP_SEMANTICS,
+        None,
+    )
+    if handle is None or handle == _WINDOWS_INVALID_HANDLE:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return int(handle)
+
+
+def _windows_os_handle(descriptor: int) -> int:
+    import msvcrt
+
+    return int(msvcrt.get_osfhandle(descriptor))
+
+
+def _windows_close_handle(handle: int) -> None:
+    if not _windows_kernel32().CloseHandle(ctypes.c_void_p(handle)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _windows_file_attributes(handle: int) -> int:
+    info = _WindowsFileAttributeTagInfo()
+    if not _windows_kernel32().GetFileInformationByHandleEx(
+        ctypes.c_void_p(handle),
+        9,
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return int(info.file_attributes)
+
+
+def _windows_handle_path(handle: int) -> str:
+    kernel32 = _windows_kernel32()
+    buffer = ctypes.create_unicode_buffer(32_768)
+    length = kernel32.GetFinalPathNameByHandleW(
+        ctypes.c_void_p(handle),
+        buffer,
+        len(buffer),
+        0,
+    )
+    if length == 0 or length >= len(buffer):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return buffer.value
+
+
+def _windows_normalize_path(path: str | Path) -> str:
+    normalized = str(path)
+    if normalized.startswith("\\\\?\\UNC\\"):
+        normalized = "\\\\" + normalized[8:]
+    elif normalized.startswith("\\\\?\\"):
+        normalized = normalized[4:]
+    return ntpath.normcase(ntpath.normpath(normalized))
+
+
+def _windows_stat_mode(path: str | Path) -> int:
+    handle = _windows_raw_handle(path)
+    try:
+        attributes = _windows_file_attributes(handle)
+    finally:
+        _windows_close_handle(handle)
+    if attributes & _WINDOWS_REPARSE_POINT:
+        return stat.S_IFLNK
+    if attributes & _WINDOWS_DIRECTORY_ATTRIBUTE:
+        return stat.S_IFDIR
+    return stat.S_IFREG
+
+
+def _windows_stat_at(parent_fd: int, name: str) -> int:
+    parent_path = _windows_handle_path(_windows_os_handle(parent_fd))
+    return _windows_stat_mode(ntpath.join(parent_path, name))
+
+
+def _windows_open_fd(
+    path: str | Path,
+    *,
+    directory: bool,
+    expected_path: str | Path,
+) -> int:
+    handle = _windows_raw_handle(path)
+    try:
+        attributes = _windows_file_attributes(handle)
+        if attributes & _WINDOWS_REPARSE_POINT:
+            raise OSError("reparse points are not allowed")
+        is_directory = bool(attributes & _WINDOWS_DIRECTORY_ATTRIBUTE)
+        if is_directory != directory:
+            raise OSError("unexpected filesystem object type")
+        actual_path = _windows_handle_path(handle)
+        if _windows_normalize_path(actual_path) != _windows_normalize_path(
+            expected_path
+        ):
+            raise OSError("filesystem path changed while opening")
+        import msvcrt
+
+        descriptor = msvcrt.open_osfhandle(
+            handle,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0),
+        )
+        handle = 0
+        return descriptor
+    finally:
+        if handle:
+            _windows_close_handle(handle)
+
+
 def _is_symlink_at(parent_fd: int, name: str) -> bool:
+    if os.name == "nt":
+        try:
+            return stat.S_ISLNK(_windows_stat_at(parent_fd, name))
+        except OSError:
+            return False
     try:
         metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     except OSError:
@@ -382,7 +548,15 @@ def _open_directory_at(
     display_path: Path,
 ) -> int:
     try:
-        opened_fd = os.open(name, _OPEN_DIRECTORY_FLAGS, dir_fd=parent_fd)
+        if os.name == "nt":
+            parent_path = _windows_handle_path(_windows_os_handle(parent_fd))
+            opened_fd = _windows_open_fd(
+                ntpath.join(parent_path, name),
+                directory=True,
+                expected_path=ntpath.join(parent_path, name),
+            )
+        else:
+            opened_fd = os.open(name, _OPEN_DIRECTORY_FLAGS, dir_fd=parent_fd)
     except OSError as exc:
         if _is_symlink_at(parent_fd, name):
             raise SkillRegistryError(
@@ -427,7 +601,16 @@ def _open_regular_file_at(
 
         filename = parts[-1]
         try:
-            file_fd = os.open(filename, _OPEN_FILE_FLAGS, dir_fd=current_fd)
+            if os.name == "nt":
+                parent_path = _windows_handle_path(_windows_os_handle(current_fd))
+                file_path = ntpath.join(parent_path, filename)
+                file_fd = _windows_open_fd(
+                    file_path,
+                    directory=False,
+                    expected_path=file_path,
+                )
+            else:
+                file_fd = os.open(filename, _OPEN_FILE_FLAGS, dir_fd=current_fd)
         except OSError as exc:
             if _is_symlink_at(current_fd, filename):
                 raise SkillRegistryError(
@@ -510,7 +693,11 @@ class SkillRegistry:
         )
         raw_root = Path(root)
         try:
-            root_mode = raw_root.lstat().st_mode
+            root_mode = (
+                _windows_stat_mode(raw_root)
+                if os.name == "nt"
+                else raw_root.lstat().st_mode
+            )
         except OSError as exc:
             raise SkillRegistryError(f"cannot inspect skill root: {raw_root}") from exc
         if stat.S_ISLNK(root_mode):
@@ -523,7 +710,15 @@ class SkillRegistry:
             raise SkillRegistryError(f"cannot resolve skill root: {raw_root}") from exc
 
         try:
-            root_fd = os.open(resolved_root, _OPEN_DIRECTORY_FLAGS)
+            root_fd = (
+                _windows_open_fd(
+                    resolved_root,
+                    directory=True,
+                    expected_path=resolved_root,
+                )
+                if os.name == "nt"
+                else os.open(resolved_root, _OPEN_DIRECTORY_FLAGS)
+            )
         except OSError as exc:
             raise SkillRegistryError(f"cannot open skill root: {raw_root}") from exc
         try:
@@ -546,7 +741,13 @@ class SkillRegistry:
             records: dict[str, _SkillRecord] = {}
 
             try:
-                entries = sorted(os.listdir(root_fd))
+                entries = sorted(
+                    os.listdir(
+                        _windows_handle_path(_windows_os_handle(root_fd))
+                        if os.name == "nt"
+                        else root_fd
+                    )
+                )
             except OSError as exc:
                 raise SkillRegistryError(
                     f"cannot list skill root: {resolved_root}"
@@ -555,11 +756,15 @@ class SkillRegistry:
             for entry_name in entries:
                 skill_dir = resolved_root / entry_name
                 try:
-                    entry_mode = os.stat(
-                        entry_name,
-                        dir_fd=root_fd,
-                        follow_symlinks=False,
-                    ).st_mode
+                    entry_mode = (
+                        _windows_stat_at(root_fd, entry_name)
+                        if os.name == "nt"
+                        else os.stat(
+                            entry_name,
+                            dir_fd=root_fd,
+                            follow_symlinks=False,
+                        ).st_mode
+                    )
                 except OSError as exc:
                     raise SkillRegistryError(
                         f"cannot inspect skill entry: {skill_dir}"

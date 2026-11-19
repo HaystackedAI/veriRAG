@@ -3,26 +3,23 @@ from __future__ import annotations
 from typing import NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from backend.auth.identity import normalize_username
 from backend.auth.origin import enforce_trusted_auth_origin
 from backend.auth.service import RefreshTokenRejected, TokenGrant, token_service
-from backend.db.models import User
-from backend.infra.auth import (
-    authenticate_user,
-    get_current_user,
-    get_db,
-    get_password_hash,
-    resolve_role,
+from backend.auth.supabase import (
+    SupabaseAuthUnavailable,
+    SupabaseTokenRejected,
+    verify_supabase_access_token,
 )
-from backend.rate_limits.auth import enforce_auth_username_rate_limit
+from backend.db.models import User
+from backend.infra.auth import get_current_user, get_db
 from backend.schemas import (
     AuthResponse,
     CurrentUserResponse,
-    LoginRequest,
     LogoutResponse,
-    RegisterRequest,
+    SupabaseExchangeRequest,
 )
 
 
@@ -45,13 +42,6 @@ def _trusted_auth_origin(request: Request) -> None:
     enforce_trusted_auth_origin(request, settings=token_service.settings)
 
 
-def _normalized_username(value: str) -> str:
-    username = normalize_username(value)
-    if not username or len(username) > 100:
-        raise HTTPException(status_code=400, detail="用户名长度无效")
-    return username
-
-
 def _reject_refresh(response: Response, exc: RefreshTokenRejected) -> NoReturn:
     token_service.clear_refresh_cookie(response)
     raise HTTPException(
@@ -64,43 +54,56 @@ def _reject_refresh(response: Response, exc: RefreshTokenRejected) -> NoReturn:
     ) from exc
 
 
-@router.post("/auth/register", response_model=AuthResponse)
-def register(
-    request: RegisterRequest,
+@router.post("/auth/supabase/exchange", response_model=AuthResponse)
+def exchange_supabase_session(
+    request: SupabaseExchangeRequest,
     response: Response,
     _origin_guard: None = Depends(_trusted_auth_origin),
-    _rate_limit: None = Depends(enforce_auth_username_rate_limit),
     db: Session = Depends(get_db),
 ) -> AuthResponse:
-    username = _normalized_username(request.username)
-    password = request.password or ""
-    if not password.strip():
-        raise HTTPException(status_code=400, detail="用户名和密码不能为空")
+    try:
+        identity = verify_supabase_access_token(
+            request.access_token.get_secret_value(),
+            settings=token_service.settings,
+        )
+    except SupabaseTokenRejected as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Supabase 登录已失效，请重新登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    except SupabaseAuthUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="身份验证服务暂时不可用，请稍后重试",
+        ) from exc
 
-    exists = db.query(User).filter(User.username == username).first()
-    if exists:
-        raise HTTPException(status_code=409, detail="用户名已存在")
+    user = db.query(User).filter(User.zid == identity.user_id).one_or_none()
+    if user is None:
+        user = db.query(User).filter(User.username == identity.email).one_or_none()
+        if user is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="该邮箱已关联其他账号，请联系管理员",
+            )
+        user = User(
+            zid=identity.user_id,
+            username=identity.email,
+            password_hash=None,
+            role="user",
+        )
+        db.add(user)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            user = db.query(User).filter(User.zid == identity.user_id).one_or_none()
+            if user is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="账号创建冲突，请重试",
+                ) from None
 
-    role = resolve_role(request.role, request.admin_code)
-    user = User(username=username, password_hash=get_password_hash(password), role=role)
-    db.add(user)
-    grant = token_service.issue(db, user)
-    token_service.set_refresh_cookie(response, grant.refresh_token)
-    return _auth_response(grant)
-
-
-@router.post("/auth/login", response_model=AuthResponse)
-def login(
-    request: LoginRequest,
-    response: Response,
-    _origin_guard: None = Depends(_trusted_auth_origin),
-    _rate_limit: None = Depends(enforce_auth_username_rate_limit),
-    db: Session = Depends(get_db),
-) -> AuthResponse:
-    username = _normalized_username(request.username)
-    user = authenticate_user(db, username, request.password)
-    if not user:
-        raise HTTPException(status_code=401, detail="用户名或密码错误")
     grant = token_service.issue(db, user)
     token_service.set_refresh_cookie(response, grant.refresh_token)
     return _auth_response(grant)

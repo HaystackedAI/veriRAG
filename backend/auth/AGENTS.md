@@ -12,6 +12,8 @@
 
 - **Access Token**：短期签名 Bearer，含 `iat`/`jti`；浏览器只存当前页面内存，不写 Cookie、`localStorage` 或持久缓存。
 - **Refresh Token**：高熵 opaque credential，只通过 HttpOnly `Path=/auth` Cookie 传输；服务端只保存 SHA-256 hash。
+- Supabase Auth 负责邮箱/密码；Supabase access token 只提交给 `/auth/supabase/exchange`，验证后立即换成本应用凭据，不用于业务 API。
+- 前端只使用 Supabase publishable key；Supabase session 不持久化，角色由本地 `users` 记录决定，不采信客户端 metadata。
 - 每次成功 refresh 都 rotation；自然有效期内已撤销 token 的 replay 会撤销该用户全部活跃 refresh credential。
 - 服务端先判 natural expiry，再判 replay。自然过期 token 不得触发用户级撤销；ledger 在过期后按独立 retention window 保留并由 cleanup 删除。
 - Access/Refresh token、Cookie、密码、raw IP、username 和 Bearer 不进入日志、Event、Rate Limit key 或公开错误。
@@ -22,14 +24,14 @@
 
 - Refresh rotate、当前设备 logout、logout-all 的写事务先锁 User，再锁定/写入该用户 RefreshToken。
 - token 签发、旧 token 撤销和新 token 持久化必须处于同一事务；失败不能留下双活 credential。
-- 旧 bcrypt/bcrypt-sha256 仅允许在成功登录事务中只读验证并单向升级 PBKDF2；它不是第二套密码写入 Interface。
+- Supabase UUID 存于 `users.zid`；`users.id` 仍是业务关系表的内部主键，不得将外部 UUID 直接当作整数 FK 使用。
 - Cleanup 不在 API 热路径运行，只删除 `expires_at + retention` 已越过的 ledger 行。
 
 ## Unsafe auth POST 顺序
 
 Starlette middleware 顺序是安全语义，不是风格：
 
-1. 外层 metadata guard 校验 same-origin/显式跨源 allowlist、Fetch Metadata、JSON media type、Content-Length 语法和声明的 16 KiB 上限；拒绝不能消耗 quota。
+1. 外层 metadata guard 校验 same-origin/显式跨源 allowlist、Fetch Metadata、JSON media type、Content-Length 语法和声明的 16 KiB 上限；exchange 请求必须使用 JSON，拒绝不能消耗 quota。
 2. Rate Limit 原子计费。
 3. 内层 streaming body guard 在计费后累计真实 body，阻止无/伪 Content-Length 超过 16 KiB。
 4. Route 才进入 username 规范化、密码校验与 credential mutation。
@@ -38,7 +40,7 @@ Starlette middleware 顺序是安全语义，不是风格：
 
 ## Rate Limit
 
-- Login/Register 在 PBKDF2/bcrypt 前分别消费直接 client IP 与 `IP + NFKC/trim/casefold username` 两个 bucket；复合 identity 一次消耗两个 quota unit。
+- Supabase exchange 使用基于可信 client IP 的独立入口 policy；Supabase 自身负责邮箱注册和密码验证限流。不得将 access token 原文用作限流 identity。
 - identity 在进入 Redis key 前使用独立 `RATE_LIMIT_HMAC_KEY`；该 key 与 `JWT_SECRET_KEY` 必须不同。
 - 生产使用 Redis、多实例共享、Redis `TIME` 和原子 Lua；存储不可用返回 typed 503，不能 fail-open。
 - 只读取已经过可信代理修正的 ASGI `scope.client`。Module 不直接相信任意 `X-Forwarded-For`。

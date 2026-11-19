@@ -45,6 +45,7 @@ class ProviderRuntime:
             model_name=embedding.model,
             model_revision=embedding.revision,
             device=embedding.device,
+            api_key=embedding.api_key.get_secret_value(),
             provider_name=embedding.model.rsplit("/", 1)[-1] or "embedding-model",
             encoder_concurrency=embedding.max_concurrency,
             executor_workers=embedding.executor_workers,

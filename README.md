@@ -154,15 +154,25 @@ API 与两个 worker 必须使用同一 release 和配置。API 与索引 worker
 ### 1. 配置环境
 
 ```bash
-cp .env.example .env
+cp .env.example backend/.env
 ```
+
+后端默认从 `backend/.env` 读取配置；`UPLOAD_DIR` 和 `SKILL_DIR` 的相对路径以 `backend/`
+为基准。将 Skill 目录配置为 `./skills/catalog`。
 
 至少需要修改以下配置：
 
 - `ARK_API_KEY`、`BASE_URL`、`MODEL`、`FAST_MODEL`、`GRADE_MODEL` 和
   `EVALUATION_MODEL`；这些模型值只用于首次创建模型控制面默认值。
 - `JWT_SECRET_KEY`：至少 32 字符的随机值，例如使用 `openssl rand -hex 32` 生成。
-- 如需注册管理员，设置独立的 `ADMIN_INVITE_CODE`；留空会禁用公开 admin 注册。
+- `SUPABASE_URL` 与 `SUPABASE_PUBLISHABLE_KEY`：从 Supabase 项目 API 设置中获取。前端在
+  `frontend-react/.env.development` 与 `frontend-react/.env.production` 配置对应的
+  `VITE_SUPABASE_URL` 和 `VITE_SUPABASE_PUBLISHABLE_KEY`。Vite 会按开发/生产 mode 自动加载；
+  不要将 Supabase secret key 放入前端。
+
+Supabase Auth 负责邮箱/密码注册与登录；启用邮箱验证时，用户需先确认邮箱。新账号默认是
+普通用户；管理员角色只能在后端受控地授予。应用通过 Supabase 用户 UUID 写入 `users.zid`，
+`users.id` 继续作为现有关系表的内部主键。
 
 `.env.example` 中的 PostgreSQL 与 Redis DSN 已与开发 Compose 默认值对齐。Rerank、Web
 Research、SQL Assistant 和 Sandbox 都是可选能力，默认关闭或允许明确降级。
@@ -366,9 +376,9 @@ Access Token 与 username 的 401 重试一次，避免旧账号请求复用新�
 uv run --no-sync python -m backend.auth.cleanup
 ```
 
-新注册和新密码统一写入 PBKDF2-SHA256。为了保留既有账号，登录边界仍会只读验证历史 bcrypt /
-bcrypt-sha256 哈希，并在成功签发凭据的同一事务中单向改写为 PBKDF2；这是一段可删除的一次性
-数据迁移读取器，不是第二套认证或会话实现。
+邮箱和密码由 Supabase Auth 管理。后端验证 Supabase access token 后，以 Supabase UUID 在
+`users.zid` 查找或创建本地用户；Supabase access token 不用于访问业务 API，应用继续签发仅驻留
+浏览器内存的短期 access token，并通过 HttpOnly Cookie 轮换 refresh token。
 
 生产认证至少需要：
 
@@ -383,8 +393,7 @@ RATE_LIMIT_HMAC_KEY=<至少 32 字符且不同于 JWT_SECRET_KEY 的随机 Secre
 RATE_LIMIT_KEY_PREFIX=supermew
 ```
 
-登录和注册在 PBKDF2/bcrypt 校验前执行直接 client IP 与 `IP + NFKC/casefold username` 两层限流。
-Thread Run、知识检索、HITL resume、上传与 general API 使用独立 policy。Rate Limit 只读取经过
+Supabase 身份交换、Thread Run、HITL resume、上传与 general API 使用独立限流 policy。Rate Limit 只读取经过
 受控代理修正的 ASGI `scope.client`，不会自行信任任意 `X-Forwarded-For`。
 
 所有 `/auth` unsafe POST 会先校验 Origin / Fetch Metadata、JSON media type、Content-Length 和
@@ -591,10 +600,7 @@ npm run build
 
 ### 鉴权
 
-- `POST /auth/register`：注册并返回只供内存使用的 Access Token，同时设置 HttpOnly Refresh
-  Cookie。
-- `POST /auth/login`：登录并签发 Access / Refresh credential；成功登录旧 bcrypt 账号时执行单向
-  PBKDF2 迁移。
+- `POST /auth/supabase/exchange`：验证 Supabase access token，映射 `users.zid` 并签发应用会话。
 - `POST /auth/refresh`：轮换 Refresh Token，并签发新的内存 Access Token。
 - `POST /auth/logout`：撤销当前设备 Refresh Token 并清除 Cookie。
 - `POST /auth/logout-all`：使用 Access Token 鉴权，撤销当前用户全部活跃 Refresh Token。
@@ -744,8 +750,9 @@ Case，并由独立 worker 执行。CLI 更适合仓库 Gate、分支比较与�
 
 ### Embedding 与 Rerank
 
-- `EMBEDDING_MODEL`、`EMBEDDING_MODEL_REVISION`、`EMBEDDING_DEVICE`、
-  `DENSE_EMBEDDING_DIM`：本地 Dense 模型与 Milvus schema 身份。
+- `EMBEDDING_MODEL`、`EMBEDDING_MODEL_REVISION`、`GEMINI_API_KEY`、
+  `EMBEDDING_DEVICE`、`DENSE_EMBEDDING_DIM`：Gemini Dense embedding 与 1024维 Milvus
+  schema 身份。默认使用 `gemini-embedding-2` 与 1024维输出。
 - `EMBEDDING_TIMEOUT_SECONDS`、`EMBEDDING_EXECUTOR_WORKERS`、`EMBEDDING_MAX_CONCURRENCY`：
   Embedding 执行与并发预算。
 - `EMBEDDING_QUERY_MICROBATCH_MS`、`EMBEDDING_QUERY_MAX_BATCH_SIZE`、
@@ -791,10 +798,9 @@ Agent 会在模型调用预算内预留最后一轮回答；工具调用额度�
 
 - `JWT_SECRET_KEY`、`JWT_ALGORITHM`、`JWT_EXPIRE_MINUTES`、`JWT_REFRESH_EXPIRE_DAYS`：JWT 与
   credential 生命周期。
-- `ADMIN_INVITE_CODE`：留空即禁用公开 admin 注册；启用时不得复用 JWT 或 Rate Limit Secret。
+- `SUPABASE_URL`、`SUPABASE_PUBLISHABLE_KEY`：后端验证 Supabase 身份时使用；必须同时配置。
 - `AUTH_REFRESH_LEDGER_RETENTION_DAYS`、`AUTH_REFRESH_COOKIE_NAME`、
   `AUTH_REFRESH_COOKIE_SECURE`、`AUTH_REFRESH_COOKIE_SAMESITE`：Refresh ledger 与 Cookie policy。
-- `PASSWORD_PBKDF2_ROUNDS`：新密码和旧账号迁移后的 PBKDF2 cost。
 - `RATE_LIMIT_ENABLED`、`RATE_LIMIT_BACKEND`、`RATE_LIMIT_HMAC_KEY`、
   `RATE_LIMIT_KEY_PREFIX`：入口限流；生产必须使用 Redis 和独立随机 HMAC Key。
 - `CORS_ORIGINS`、`CORS_ALLOW_CREDENTIALS`：显式跨源 allowlist；生产优先同源，只允许一个
@@ -807,7 +813,7 @@ Agent 会在模型调用预算内预留最后一轮回答；工具调用额度�
 - `CUSTOM_HTTP_*`：声明式 Custom HTTP Tool 的 DNS timeout、并发和地址数量边界。
 - `SANDBOX_*`：Docker Adapter、digest image、rootless daemon、CPU、内存、PID、workspace、源码、
   输出和清理预算。
-- `SKILL_DIR`、`SKILL_MANIFEST_NAME`、`SKILL_MAX_CONTENT_BYTES`：文件型 Skill Registry 输入。
+- `SKILL_DIR`、`SKILL_MANIFEST_NAME`、`SKILL_MAX_CONTENT_BYTES`：文件型 Skill Registry 输入；默认 Skill 目录为 `backend/skills/catalog`。
 - `LOG_LEVEL`、`METRICS_ENABLED`、`TRACE_RETENTION_DAYS`：可观测性与保留周期。
 
 ## 持久化 Run/Event 与可恢复流 — 技术细节
@@ -913,8 +919,8 @@ Event 表达。
 
 ### 6. Hybrid Search 深度实现
 
-- **Dense Pathway**：`langchain_huggingface.HuggingFaceEmbeddings` 使用固定模型 revision 生成
-  Dense vector，维度必须与 Milvus `dense_embedding` schema 一致；默认 `BAAI/bge-m3` 为 1024。
+- **Dense Pathway**：`gemini-embedding-2` 使用 API 生成 1024维 Dense vector，
+  维度必须与 Milvus `dense_embedding` schema 一致；密钥只从 `GEMINI_API_KEY` 读取。
 - **Sparse Pathway**：文档只需写入启用中文 analyzer 的 `text` 字段，Milvus 通过
   `FunctionType.BM25` 生成并维护 `sparse_embedding`。
 - **RRF 融合**：Milvus 使用两个 `AnnSearchRequest` 发起 Dense/Sparse 检索，并用
@@ -1000,7 +1006,7 @@ docker compose -f docker-compose.prod.yml config
 2. 扩展可信路由，使专业 Skill 在进入 graph 前稳定激活，同时继续按需披露 Tool schema。
 3. 继续优化派生摘要与长期记忆，在任何优化中保持原始 Message 为事实来源。
 4. 支持修改 Thread 标题、更多 Artifact 持久化 Adapter 和完整所有权下载 Interface。
-5. 在历史 bcrypt 账号全部迁移后，删除一次性 legacy password verifier 及对应依赖和测试。
+5. 完善 Supabase Auth 的用户邮件验证、密码重置和管理员账号运维流程。
 
 ### 已完成的基础治理
 
@@ -1013,7 +1019,7 @@ docker compose -f docker-compose.prod.yml config
   持续可检索。
 - canonical `/v1` Thread/Run/Event Interface 已替代旧聊天兼容路由，避免两套执行链长期并存。
 - 普通 Guardrail `ALLOW` 不再投影为前端告警；拒绝和审批仍保留真实安全语义与审计证据。
-- 新密码统一 PBKDF2；旧 bcrypt/bcrypt-sha256 只在成功登录时单向迁移，不创建第二套会话路径。
+- Supabase UUID 通过 `users.zid` 映射到本地用户；现有 `users.id` 继续服务关系表外键。
 
 ## 文档索引
 

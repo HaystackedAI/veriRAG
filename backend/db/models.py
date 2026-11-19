@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from uuid import UUID
 
 from sqlalchemy import (
     CHAR,
@@ -17,6 +18,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    Uuid,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -46,9 +48,12 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     username: Mapped[str] = mapped_column(
-        String(100), unique=True, index=True, nullable=False
+        String(320), unique=True, index=True, nullable=False
     )
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    zid: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), unique=True, index=True, nullable=True
+    )
     role: Mapped[str] = mapped_column(String(20), default="user", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False

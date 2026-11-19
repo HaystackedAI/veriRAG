@@ -8,15 +8,10 @@ from dataclasses import dataclass
 from backend.rate_limits.contracts import RateLimitPolicy
 
 
-AUTH_LOGIN_POLICY = RateLimitPolicy(
-    id="auth-login",
+AUTH_SUPABASE_EXCHANGE_POLICY = RateLimitPolicy(
+    id="auth-supabase-exchange",
     limit=10,
     window_seconds=60,
-)
-AUTH_REGISTER_POLICY = RateLimitPolicy(
-    id="auth-register",
-    limit=5,
-    window_seconds=3_600,
 )
 AUTH_REFRESH_POLICY = RateLimitPolicy(
     id="auth-refresh",
@@ -76,13 +71,8 @@ class RoutePolicyRule:
 DEFAULT_ROUTE_POLICY_RULES = (
     RoutePolicyRule(
         methods=frozenset({"POST"}),
-        path_pattern=re.compile(r"/auth/login/?"),
-        policy=AUTH_LOGIN_POLICY,
-    ),
-    RoutePolicyRule(
-        methods=frozenset({"POST"}),
-        path_pattern=re.compile(r"/auth/register/?"),
-        policy=AUTH_REGISTER_POLICY,
+        path_pattern=re.compile(r"/auth/supabase/exchange/?"),
+        policy=AUTH_SUPABASE_EXCHANGE_POLICY,
     ),
     RoutePolicyRule(
         methods=frozenset({"POST"}),
@@ -137,10 +127,9 @@ DEFAULT_ROUTE_POLICY_MATCHER = RoutePolicyMatcher()
 
 
 __all__ = [
-    "AUTH_LOGIN_POLICY",
     "AUTH_LOGOUT_POLICY",
     "AUTH_REFRESH_POLICY",
-    "AUTH_REGISTER_POLICY",
+    "AUTH_SUPABASE_EXCHANGE_POLICY",
     "DEFAULT_ROUTE_POLICY_MATCHER",
     "DEFAULT_ROUTE_POLICY_RULES",
     "DOCUMENT_UPLOAD_POLICY",

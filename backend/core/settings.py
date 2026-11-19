@@ -13,8 +13,9 @@ from backend.sandbox.contracts import validate_image_digest
 from backend.security.origins import canonical_http_origin
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-ENV_FILE = PROJECT_ROOT / ".env"
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = BACKEND_ROOT.parent
+ENV_FILE = BACKEND_ROOT / ".env"
 
 
 class _EnvSettings(BaseSettings):
@@ -96,10 +97,14 @@ class RagSettings(_EnvSettings):
 
 
 class EmbeddingSettings(_EnvSettings):
-    model: str = Field(default="BAAI/bge-m3", validation_alias="EMBEDDING_MODEL")
-    revision: str = Field(
-        default="5617a9f61b028005a4858fdac845db406aefb181",
-        validation_alias="EMBEDDING_MODEL_REVISION",
+    model: str = Field(
+        default="gemini-embedding-2",
+        validation_alias="EMBEDDING_MODEL",
+    )
+    revision: str = Field(default="", validation_alias="EMBEDDING_MODEL_REVISION")
+    api_key: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias="GEMINI_API_KEY",
     )
     device: str = Field(default="cpu", validation_alias="EMBEDDING_DEVICE")
     dimension: int = Field(
@@ -358,6 +363,11 @@ class AgentSettings(_EnvSettings):
 
 
 class SecuritySettings(_EnvSettings):
+    supabase_url: str = Field(default="", validation_alias="SUPABASE_URL")
+    supabase_publishable_key: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias="SUPABASE_PUBLISHABLE_KEY",
+    )
     jwt_secret_key: SecretStr = Field(
         default=SecretStr(""),
         validation_alias="JWT_SECRET_KEY",
@@ -457,7 +467,7 @@ class StorageSettings(_EnvSettings):
         default="supermew", validation_alias="REDIS_KEY_PREFIX"
     )
     upload_dir: Path = Field(
-        default=PROJECT_ROOT / "data" / "documents",
+        default=BACKEND_ROOT / "data" / "documents",
         validation_alias="UPLOAD_DIR",
     )
     max_upload_bytes: int = Field(
@@ -500,7 +510,7 @@ class StorageSettings(_EnvSettings):
     @classmethod
     def resolve_upload_dir(cls, value: Path) -> Path:
         path = value.expanduser()
-        return path.resolve() if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+        return path.resolve() if path.is_absolute() else (BACKEND_ROOT / path).resolve()
 
 
 class WorkerSettings(_EnvSettings):
@@ -609,7 +619,7 @@ class ObservabilitySettings(_EnvSettings):
 
 class SkillSettings(_EnvSettings):
     skill_dir: Path = Field(
-        default=PROJECT_ROOT / "skills",
+        default=BACKEND_ROOT / "skills" / "catalog",
         validation_alias="SKILL_DIR",
     )
     manifest_name: str = Field(
@@ -623,6 +633,12 @@ class SkillSettings(_EnvSettings):
         le=4_194_304,
         validation_alias="SKILL_MAX_CONTENT_BYTES",
     )
+
+    @field_validator("skill_dir", mode="after")
+    @classmethod
+    def resolve_skill_dir(cls, value: Path) -> Path:
+        path = value.expanduser()
+        return path.resolve() if path.is_absolute() else (BACKEND_ROOT / path).resolve()
 
 
 class SandboxSettings(_EnvSettings):
@@ -1151,6 +1167,20 @@ class AppSettings(BaseModel):
 
     def validate_startup(self) -> None:
         problems: list[str] = []
+        if bool(self.security.supabase_url.strip()) != bool(
+            self.security.supabase_publishable_key.get_secret_value().strip()
+        ):
+            problems.append("SUPABASE_URL 与 SUPABASE_PUBLISHABLE_KEY 必须同时配置")
+        if (
+            self.embedding.model == "gemini-embedding-2"
+            and not self.embedding.api_key.get_secret_value().strip()
+        ):
+            problems.append("使用 gemini-embedding-2 时必须配置 GEMINI_API_KEY")
+        if (
+            self.embedding.model == "gemini-embedding-2"
+            and self.embedding.dimension != 1024
+        ):
+            problems.append("gemini-embedding-2 当前必须配置 DENSE_EMBEDDING_DIM=1024")
         secret = self.security.jwt_secret_key.get_secret_value().strip()
         if len(secret) < 32 or secret.lower() in _WEAK_SECRETS:
             problems.append("JWT_SECRET_KEY 必须是至少 32 字符的随机密钥")
@@ -1429,8 +1459,10 @@ class AppSettings(BaseModel):
     def redacted_dict(self) -> dict:
         payload = self.model_dump(mode="json")
         payload["models"]["api_key"] = "***"
+        payload["embedding"]["api_key"] = "***"
         payload["rerank"]["api_key"] = "***"
         payload["security"]["jwt_secret_key"] = "***"
+        payload["security"]["supabase_publishable_key"] = "***"
         payload["security"]["admin_invite_code"] = "***"
         payload["rate_limits"]["identity_hmac_key"] = "***"
         payload["storage"]["database_url"] = _redact_url(

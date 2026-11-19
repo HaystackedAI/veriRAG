@@ -148,8 +148,7 @@ type AuthRetryConfig = InternalAxiosRequestConfig & {
 };
 
 const AUTH_LIFECYCLE_PATHS = new Set([
-  '/auth/login',
-  '/auth/register',
+  '/auth/supabase/exchange',
   '/auth/refresh',
   '/auth/logout',
 ]);

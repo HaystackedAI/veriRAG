@@ -123,6 +123,7 @@ class EmbeddingRuntime:
         model_name: str | None = None,
         model_revision: str | None = None,
         device: str | None = None,
+        api_key: str | None = None,
         provider_name: str = "embedding-model",
         model_factory: ModelFactory | None = None,
         provider_executor: ProviderExecutor | None = None,
@@ -176,6 +177,9 @@ class EmbeddingRuntime:
             else (os.getenv("EMBEDDING_MODEL_REVISION") or "").strip()
         )
         self.device = (device or os.getenv("EMBEDDING_DEVICE") or "cpu").strip()
+        self._api_key = (
+            api_key if api_key is not None else os.getenv("GEMINI_API_KEY", "")
+        )
         self.provider_name = provider_name
         if not self.model_name:
             raise ValueError("model_name cannot be empty")
@@ -409,7 +413,10 @@ class EmbeddingRuntime:
                     wait=True,
                     cancel_futures=True,
                 )
-            self._model = None
+            model, self._model = self._model, None
+            close = getattr(model, "close", None)
+            if callable(close):
+                await asyncio.to_thread(close)
         except BaseException:
             self._closing = False
             raise
@@ -796,6 +803,17 @@ class EmbeddingRuntime:
         return self._clock() + self._default_timeout_seconds
 
     def _create_default_model(self) -> Any:
+        if self.model_name == "gemini-embedding-2":
+            from backend.providers.gemini_embeddings import GeminiEmbeddingModel
+
+            if self._dimension != 1024:
+                raise ValueError("gemini-embedding-2 requires DENSE_EMBEDDING_DIM=1024")
+            return GeminiEmbeddingModel(
+                api_key=self._api_key,
+                output_dimensionality=1024,
+                timeout_seconds=self._default_timeout_seconds or 15.0,
+            )
+
         from sentence_transformers import SentenceTransformer
 
         kwargs: dict[str, Any] = {"device": self.device}
