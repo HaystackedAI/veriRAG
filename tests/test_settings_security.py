@@ -79,6 +79,17 @@ class SettingsSecurityTests(unittest.TestCase):
     def test_agent_model_call_budget_defaults_to_five_calls(self):
         self.assertEqual(5, AgentSettings(_env_file=None).max_model_calls)
 
+    def test_groq_model_settings_use_groq_environment_names(self):
+        settings = ModelSettings(
+            _env_file=None,
+            GROQ_API_KEY="groq-test-key",
+            GROQ_MODEL="openai/gpt-oss-120b",
+        )
+
+        self.assertEqual("groq-test-key", settings.api_key.get_secret_value())
+        self.assertEqual("https://api.groq.com/openai/v1", settings.base_url)
+        self.assertEqual("openai/gpt-oss-120b", settings.answer_model)
+
     def test_embedding_query_microbatch_is_disabled_by_default(self):
         self.assertEqual(
             0.0,

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import unquote, urlsplit
 
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from backend.sandbox.contracts import validate_image_digest
@@ -43,9 +43,18 @@ class ApplicationSettings(_EnvSettings):
 
 
 class ModelSettings(_EnvSettings):
-    api_key: SecretStr = Field(default=SecretStr(""), validation_alias="ARK_API_KEY")
-    base_url: str = Field(default="", validation_alias="BASE_URL")
-    answer_model: str = Field(default="", validation_alias="MODEL")
+    api_key: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias=AliasChoices("GROQ_API_KEY", "ARK_API_KEY"),
+    )
+    base_url: str = Field(
+        default="https://api.groq.com/openai/v1",
+        validation_alias=AliasChoices("GROQ_BASE_URL", "BASE_URL"),
+    )
+    answer_model: str = Field(
+        default="openai/gpt-oss-120b",
+        validation_alias=AliasChoices("GROQ_MODEL_ID", "GROQ_MODEL", "MODEL"),
+    )
     fast_model: str = Field(default="", validation_alias="FAST_MODEL")
     grade_model: str = Field(default="", validation_alias="GRADE_MODEL")
     evaluation_model: str = Field(

@@ -10,7 +10,7 @@ import {
     subscribeAuthSession,
     type AuthSession,
 } from '@/auth/session';
-import { createThread, listThreads } from '@/threads/threadClient';
+import { createThread, getThreadMessages, listThreads } from '@/threads/threadClient';
 import { createRun, getRun } from '@/runs/runClient';
 import type { ThreadSummary } from '@/types/threads';
 import superMewMark from '@/assets/images/supermew-mark.png';
@@ -169,17 +169,29 @@ export default function App() {
                 await new Promise((resolve) => window.setTimeout(resolve, 750));
                 run = await getRun(run.id, session.access_token);
             }
-            setMessages((current) => [
-                ...current,
-                {
-                    id: `a-${run.id}`,
-                    isUser: false,
-                    text:
-                        run.status === 'succeeded'
-                            ? '消息已提交并完成处理。'
-                            : run.error?.message || '运行未完成，请稍后重新连接。',
-                },
-            ]);
+            if (run.status === 'succeeded') {
+                const messagePage = await getThreadMessages(targetThreadId, { limit: 200 });
+                const assistantMessage = messagePage.messages.find(
+                    (message) => message.id === run.assistant_message_id && message.role === 'assistant'
+                );
+                setMessages((current) => [
+                    ...current,
+                    {
+                        id: `a-${run.id}`,
+                        isUser: false,
+                        text: assistantMessage?.content || '运行已完成，但没有返回助手内容。',
+                    },
+                ]);
+            } else {
+                setMessages((current) => [
+                    ...current,
+                    {
+                        id: `a-${run.id}`,
+                        isUser: false,
+                        text: run.error?.message || '运行未完成，请稍后重新连接。',
+                    },
+                ]);
+            }
         } catch (error: unknown) {
             setMessages((current) => [
                 ...current,
