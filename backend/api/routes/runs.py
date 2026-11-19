@@ -138,8 +138,7 @@ def _stream_response(
     )
 
 
-@router.post(
-    "/threads/{thread_id}/runs",
+@router.post("/threads/{thread_id}/runs",
     response_model=RunCreateResponse,
     status_code=status.HTTP_201_CREATED,
 )

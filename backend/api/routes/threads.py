@@ -21,11 +21,7 @@ from backend.threads.service import thread_service
 router = APIRouter(prefix="/v1", tags=["threads"])
 
 
-@router.post(
-    "/threads",
-    response_model=ThreadResponse,
-    status_code=status.HTTP_201_CREATED,
-)
+@router.post("/threads",response_model=ThreadResponse,status_code=status.HTTP_201_CREATED,)
 async def create_thread(
     request: ThreadCreateRequest,
     current_user: User = Depends(get_current_user),
@@ -51,8 +47,7 @@ async def list_threads(
     )
 
 
-@router.get(
-    "/threads/{thread_id}/messages",
+@router.get("/threads/{thread_id}/messages",
     response_model=ThreadMessagesResponse,
 )
 async def get_thread_messages(
