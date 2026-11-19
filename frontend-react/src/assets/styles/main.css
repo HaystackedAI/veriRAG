@@ -1286,6 +1286,66 @@ html[data-theme='light'] .welcome-avatar {
   line-height: 1.75;
 }
 
+.welcome-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.welcome-mode-grid button {
+  display: grid;
+  min-width: 0;
+  justify-items: center;
+  gap: 5px;
+  padding: 12px 8px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    background 180ms ease;
+}
+
+.welcome-mode-grid button:hover,
+.welcome-mode-grid button.active {
+  border-color: rgba(168, 246, 209, 0.3);
+  color: var(--text-soft);
+  background: rgba(168, 246, 209, 0.055);
+  transform: translateY(-2px);
+}
+
+.welcome-mode-grid button > span {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--mint);
+  background: rgba(168, 246, 209, 0.07);
+  font-size: var(--font-small);
+}
+
+.welcome-mode-grid strong,
+.welcome-mode-grid small {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.welcome-mode-grid strong {
+  color: inherit;
+  font-size: var(--font-small);
+}
+
+.welcome-mode-grid small {
+  font-size: var(--font-micro);
+}
+
 .welcome-capabilities {
   display: flex;
   flex-wrap: wrap;
@@ -1893,6 +1953,43 @@ html[data-theme='light'] .input-area:focus-within {
 
 .chat-input-textarea::placeholder {
   color: var(--muted-strong);
+}
+
+.chat-message {
+  display: flex;
+  width: 100%;
+  justify-content: flex-start;
+  animation: message-in 260ms ease;
+}
+
+.chat-message-user {
+  justify-content: flex-end;
+}
+
+.message-bubble {
+  max-width: min(760px, 84%);
+  padding: 13px 16px;
+  border: 1px solid var(--line);
+  border-radius: 18px 18px 18px 5px;
+  color: var(--text-soft);
+  background: var(--surface);
+  font-size: var(--font-body);
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.chat-message-user .message-bubble {
+  border-color: rgba(199, 185, 255, 0.2);
+  border-radius: 18px 18px 5px 18px;
+  color: #eceaf9;
+  background: linear-gradient(135deg, rgba(143, 119, 255, 0.2), rgba(255, 255, 255, 0.05));
+}
+
+html[data-theme='light'] .chat-message-user .message-bubble {
+  border-color: rgba(109, 88, 205, 0.14);
+  color: #383650;
+  background: linear-gradient(135deg, rgba(128, 103, 235, 0.12), rgba(255, 255, 255, 0.54));
 }
 
 .send-btn {
@@ -3851,6 +3948,10 @@ span.cite-ref,
 @media (max-width: 720px) {
   .app-page {
     padding: 8px;
+  }
+
+  .welcome-mode-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .app-wrapper {
