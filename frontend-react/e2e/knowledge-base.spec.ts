@@ -62,6 +62,21 @@ test('admin can upload, inspect, search, and delete a knowledge document', async
       json: { access_token: 'knowledge-base-token', username: 'admin-user', role: 'admin' },
     });
   });
+  await page.route('**/health/ready', async (route) => {
+    await route.fulfill({
+      status: 503,
+      json: {
+        status: 'not_ready',
+        indexing_worker: {
+          required: true,
+          ready: false,
+          fresh_workers: 0,
+          queue_counts: { index_pending: 1 },
+          latest_heartbeat_at: null,
+        },
+      },
+    });
+  });
   await page.route('**/v1/capabilities', async (route) => {
     await route.fulfill({
       json: { schema_version: 1, catalog_hash: 'c'.repeat(64), skills: [], tools: [] },
@@ -188,6 +203,7 @@ test('admin can upload, inspect, search, and delete a knowledge document', async
   await expect(page.getByRole('button', { name: '知识库', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '知识库', exact: true }).click();
   await expect(page.getByRole('heading', { name: '全部文档' })).toBeVisible();
+  await expect(page.getByText('Indexing Worker 尚未就绪', { exact: false })).toBeVisible();
   await expect(page.getByText('知识库还是空的')).toBeVisible();
 
   await page.locator('input[type="file"]').setInputFiles({
@@ -211,4 +227,68 @@ test('admin can upload, inspect, search, and delete a knowledge document', async
   await page.getByRole('button', { name: '删除文档 guide.pdf' }).click();
   await expect.poll(() => deleteStarted).toBe(true);
   await expect(page.getByText('知识库还是空的')).toBeVisible();
+});
+
+test('knowledge base content scrolls within the page viewport', async ({ page }) => {
+  const documents = Array.from({ length: 24 }, (_, index) => ({
+    filename: `guide-${index}.pdf`,
+    file_type: 'PDF',
+    chunk_count: 7,
+    document_id: `document-${index}`,
+    current_version_id: `version-${index}`,
+    pending_version_id: null,
+    version_number: 1,
+    status: 'ready',
+    parent_chunk_count: 2,
+    size_bytes: 4096,
+    uploaded_at: '2026-11-19T00:00:00Z',
+  }));
+
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.route('**/auth/refresh', async (route) => {
+    await route.fulfill({
+      json: { access_token: 'knowledge-base-token', username: 'admin-user', role: 'admin' },
+    });
+  });
+  await page.route('**/health/ready', async (route) => {
+    await route.fulfill({
+      json: {
+        status: 'ready',
+        indexing_worker: {
+          required: true,
+          ready: true,
+          fresh_workers: 1,
+          queue_counts: { index_pending: 0 },
+          latest_heartbeat_at: '2026-11-19T00:00:00Z',
+        },
+      },
+    });
+  });
+  await page.route('**/v1/capabilities', async (route) => {
+    await route.fulfill({
+      json: { schema_version: 1, catalog_hash: 'c'.repeat(64), skills: [], tools: [] },
+    });
+  });
+  await page.route('**/v1/threads', async (route) => {
+    await route.fulfill({ json: { threads: [] } });
+  });
+  await page.route('**/documents', async (route) => {
+    await route.fulfill({ json: { documents } });
+  });
+  await page.route('**/documents/upload/jobs', async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.route('**/documents/delete/jobs', async (route) => {
+    await route.fulfill({ json: [] });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '知识库', exact: true }).click();
+  const panel = page.locator('.settings-panel');
+  await expect(page.getByText('guide-23.pdf')).toBeVisible();
+  await expect.poll(() => panel.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(
+    true
+  );
+  await panel.evaluate((element) => element.scrollTo(0, element.scrollHeight));
+  await expect.poll(() => panel.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
 });

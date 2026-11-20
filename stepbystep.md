@@ -28,3 +28,7 @@ INFO  [alembic.runtime.migration] Running upgrade 0017_rag_eval_provider_stage -
 5. (verirag) PS B:\veriRAG> uv run --frozen python -c "from backend.infra.database import assert_schema_current; assert_schema_current(); print('schema current')"
 schema current
 (verirag) PS B:\veriRAG> 
+
+
+
+uv run --no-sync python -m backend.workers.indexing 

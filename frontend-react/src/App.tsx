@@ -1234,7 +1234,9 @@ export default function App() {
                             className={
                                 nav === 'capabilities'
                                     ? 'chat-area capability-admin-host'
-                                    : 'chat-area'
+                                    : nav === 'settings'
+                                      ? 'chat-area knowledge-base-host'
+                                      : 'chat-area'
                             }
                             style={{
                                 width: '100%',

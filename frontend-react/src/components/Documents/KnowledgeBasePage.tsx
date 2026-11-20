@@ -41,6 +41,7 @@ const RECOVERABLE_DELETE_JOB_STATUSES = new Set<DeleteJobStatus>([
 ]);
 
 const ACCEPTED_EXTENSIONS = new Set(['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.html', '.htm']);
+const JOB_POLL_INTERVAL_MS = 3000;
 
 interface DocumentListResponse {
   documents: DocumentItem[];
@@ -56,6 +57,18 @@ interface DeleteStartResponse {
   job_id: string;
   filename: string;
   message: string;
+}
+
+interface IndexingWorkerReadiness {
+  required: boolean;
+  ready: boolean;
+  fresh_workers: number;
+  queue_counts: Record<string, number>;
+  latest_heartbeat_at: string | null;
+}
+
+interface ReadinessResponse {
+  indexing_worker: IndexingWorkerReadiness;
 }
 
 interface DeletePollingState {
@@ -226,10 +239,13 @@ export default function KnowledgeBasePage() {
   const [uploadSteps, setUploadSteps] = useState<UploadStep[]>([]);
   const [uploadProgressCollapsed, setUploadProgressCollapsed] = useState(false);
   const [deleteJobs, setDeleteJobs] = useState<Record<string, ActiveDeleteJob>>({});
+  const [indexingWorker, setIndexingWorker] = useState<IndexingWorkerReadiness | null>(null);
+  const [workerReadinessError, setWorkerReadinessError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const documentsRef = useRef<DocumentItem[]>([]);
   const deleteJobsRef = useRef<Record<string, ActiveDeleteJob>>({});
   const lifecycleRef = useRef(0);
+  const readinessRequestRef = useRef(0);
   const activeUploadJobIdRef = useRef('');
   const uploadPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const uploadPollInFlightRef = useRef(false);
@@ -243,6 +259,27 @@ export default function KnowledgeBasePage() {
   const replaceDeleteJobs = useCallback((next: Record<string, ActiveDeleteJob>) => {
     deleteJobsRef.current = next;
     setDeleteJobs(next);
+  }, []);
+
+  const refreshWorkerReadiness = useCallback(async () => {
+    const generation = lifecycleRef.current;
+    const requestId = ++readinessRequestRef.current;
+    try {
+      const response = await api.get<ReadinessResponse>('/health/ready', {
+        validateStatus: (status) => status === 200 || status === 503,
+      });
+      if (generation !== lifecycleRef.current || requestId !== readinessRequestRef.current) return;
+      const worker = response.data?.indexing_worker;
+      if (!worker || typeof worker.ready !== 'boolean') {
+        throw new Error('服务就绪响应未包含索引 Worker 状态。');
+      }
+      setIndexingWorker(worker);
+      setWorkerReadinessError('');
+    } catch (error) {
+      if (generation !== lifecycleRef.current || requestId !== readinessRequestRef.current) return;
+      setIndexingWorker(null);
+      setWorkerReadinessError(publicErrorMessage(error));
+    }
   }, []);
 
   const mergeDocumentsWithActiveDeletes = useCallback((incoming: DocumentItem[]) => {
@@ -371,7 +408,7 @@ export default function KnowledgeBasePage() {
       } catch (error) {
         if (lifecycleRef.current === generation && activeUploadJobIdRef.current === jobId) {
           setUploadProgress(
-            `进度连接中断：${publicErrorMessage(error)}；后台任务仍在继续，1 秒后自动重试`
+            `进度连接中断：${publicErrorMessage(error)}；后台任务仍在继续，3 秒后自动重试`
           );
         }
       } finally {
@@ -385,7 +422,10 @@ export default function KnowledgeBasePage() {
     (jobId: string) => {
       stopUploadPolling();
       activeUploadJobIdRef.current = jobId;
-      uploadPollTimerRef.current = setInterval(() => void pollUploadJob(jobId), 1000);
+      uploadPollTimerRef.current = setInterval(
+        () => void pollUploadJob(jobId),
+        JOB_POLL_INTERVAL_MS
+      );
       void pollUploadJob(jobId);
     },
     [pollUploadJob, stopUploadPolling]
@@ -475,7 +515,7 @@ export default function KnowledgeBasePage() {
         ) {
           setDeleteJob(filename, {
             status: 'running',
-            message: `删除进度连接中断：${publicErrorMessage(error)}；后台清理仍在继续，1 秒后自动重试`,
+            message: `删除进度连接中断：${publicErrorMessage(error)}；后台清理仍在继续，3 秒后自动重试`,
             collapsed: false,
           });
         }
@@ -490,7 +530,10 @@ export default function KnowledgeBasePage() {
   const startDeletePolling = useCallback(
     (filename: string, jobId: string) => {
       stopDeletePolling(filename);
-      const timer = setInterval(() => void pollDeleteJob(filename, jobId), 1000);
+      const timer = setInterval(
+        () => void pollDeleteJob(filename, jobId),
+        JOB_POLL_INTERVAL_MS
+      );
       deletePollTimersRef.current.set(filename, { jobId, timer, inFlight: false });
       void pollDeleteJob(filename, jobId);
     },
@@ -582,6 +625,7 @@ export default function KnowledgeBasePage() {
     const generation = lifecycleRef.current;
     setDocumentsLoading(true);
     setWorkspaceNotice('');
+    void refreshWorkerReadiness();
     try {
       const initialResults = await Promise.allSettled([loadDocuments(), restoreDurableUploadJob()]);
       const deleteResults = await Promise.allSettled([restoreDurableDeleteJobs()]);
@@ -594,7 +638,7 @@ export default function KnowledgeBasePage() {
     } finally {
       if (lifecycleRef.current === generation) setDocumentsLoading(false);
     }
-  }, [loadDocuments, restoreDurableDeleteJobs, restoreDurableUploadJob]);
+  }, [loadDocuments, refreshWorkerReadiness, restoreDurableDeleteJobs, restoreDurableUploadJob]);
 
   useEffect(() => {
     lifecycleRef.current += 1;
@@ -727,6 +771,19 @@ export default function KnowledgeBasePage() {
 
   const selectedFileSize = selectedFile ? formatFileSize(selectedFile.size) : '';
   const completedUploadSteps = uploadSteps.filter((step) => step.status === 'completed').length;
+  const queuedIndexJobs = indexingWorker?.queue_counts.index_pending ?? 0;
+  const workerUnavailable = Boolean(
+    indexingWorker && !indexingWorker.ready && (indexingWorker.required || queuedIndexJobs > 0)
+  );
+  const indexingWorkerStatus = documentsLoading
+    ? '同步中'
+    : workerReadinessError
+      ? '状态未知'
+      : !indexingWorker
+        ? '检查中'
+        : indexingWorker.ready
+          ? 'Worker 在线'
+          : 'Worker 未就绪';
 
   return (
     <div className="settings-panel">
@@ -752,6 +809,18 @@ export default function KnowledgeBasePage() {
           {workspaceNotice}
         </p>
       )}
+      {workerReadinessError && (
+        <p className="operation-notice" role="status" aria-live="polite">
+          无法读取 Indexing Worker 状态：{workerReadinessError}
+        </p>
+      )}
+      {workerUnavailable && (
+        <p className="operation-notice" role="status" aria-live="polite">
+          Indexing Worker 尚未就绪（在线 Worker：{indexingWorker?.fresh_workers ?? 0}；
+          排队任务：{queuedIndexJobs}）。已保存的候选版本会留在队列中，直到 Worker 恢复。
+          可在仓库根目录运行 <code>uv run --no-sync python -m backend.workers.indexing</code>。
+        </p>
+      )}
 
       <section className="settings-stats" aria-label="知识库概况">
         <article>
@@ -766,8 +835,14 @@ export default function KnowledgeBasePage() {
         </article>
         <article>
           <span>索引状态</span>
-          <strong>{documentsLoading ? '同步中' : '已连接'}</strong>
-          <small>{isUploading ? '正在处理新文档' : '服务已连接'}</small>
+          <strong>{indexingWorkerStatus}</strong>
+          <small>
+            {isUploading
+              ? '正在处理新文档'
+              : queuedIndexJobs > 0
+                ? `${queuedIndexJobs} 个任务排队中`
+                : '文档目录已同步'}
+          </small>
         </article>
         <article>
           <span>支持格式</span>

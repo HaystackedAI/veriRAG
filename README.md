@@ -129,6 +129,10 @@ SuperMew 不把一次聊天请求视为一个不可恢复的 HTTP 调用，而�
 | 索引 worker     | `python -m backend.workers.indexing`   | Document Version 构建、发布、重试、清理和 heartbeat     |
 | RAG 评估 worker | `python -m backend.workers.evaluation` | Evaluation Job 领取、Case 执行、Judge、报告和 heartbeat |
 
+文档上传返回 `202` 只表示任务已进入持久化队列，不代表索引已开始构建。若知识库显示任务排队，
+请检查 `/health/ready` 中的 `indexing_worker` 状态，并在仓库根目录单独启动
+`uv run --no-sync python -m backend.workers.indexing`。
+
 存储职责保持单一：
 
 | 资源            | 权威职责                                                                                               | 不承担的职责                         |
