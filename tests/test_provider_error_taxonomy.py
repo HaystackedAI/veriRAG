@@ -17,16 +17,34 @@ from backend.providers import (
 
 
 class FakeResponse:
-    def __init__(self, status_code, headers=None, text=""):
+    def __init__(self, status_code, headers=None, text="", json_body=None):
         self.status_code = status_code
         self.headers = headers or {}
         self.text = text
+        self._json_body = json_body
+
+    def json(self):
+        if self._json_body is None:
+            raise ValueError("no JSON body")
+        return self._json_body
 
 
 class FakeHttpError(RuntimeError):
-    def __init__(self, status_code, *, headers=None, body="secret upstream body"):
+    def __init__(
+        self,
+        status_code,
+        *,
+        headers=None,
+        body="secret upstream body",
+        json_body=None,
+    ):
         super().__init__(body)
-        self.response = FakeResponse(status_code, headers=headers, text=body)
+        self.response = FakeResponse(
+            status_code,
+            headers=headers,
+            text=body,
+            json_body=json_body,
+        )
 
 
 def _context(operation, provider="test-provider"):
@@ -111,6 +129,32 @@ class ProviderErrorTaxonomyTests(unittest.TestCase):
         self.assertIsNotNone(error.retry_after_seconds)
         self.assertGreater(error.retry_after_seconds, 25)
         self.assertLessEqual(error.retry_after_seconds, 30)
+
+    def test_google_retry_info_is_extracted_without_exposing_response_body(self):
+        raw_secret = "upstream-private-detail"
+        error = classify_provider_exception(
+            FakeHttpError(
+                429,
+                headers={"Retry-After": "1"},
+                body=raw_secret,
+                json_body={
+                    "error": {
+                        "message": raw_secret,
+                        "details": [
+                            {
+                                "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                                "retryDelay": "7.5s",
+                            }
+                        ],
+                    }
+                },
+            ),
+            context=_context(ProviderOperation.EMBEDDING),
+        )
+
+        self.assertEqual(7.5, error.retry_after_seconds)
+        self.assertNotIn(raw_secret, error.message)
+        self.assertNotIn(raw_secret, repr(error.safe_details))
 
     def test_authentication_and_policy_failures_are_not_retryable(self):
         auth = classify_provider_exception(

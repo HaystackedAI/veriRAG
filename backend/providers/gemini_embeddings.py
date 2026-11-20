@@ -1,10 +1,60 @@
 from __future__ import annotations
 
 import math
+import logging
+import re
 from collections.abc import Sequence
 from typing import Any
 
 import httpx
+
+
+_LOGGER = logging.getLogger(__name__)
+_SAFE_QUOTA_LABEL_RE = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
+_SAFE_QUOTA_VALUE_RE = re.compile(r"^\d{1,12}$")
+
+
+def _quota_failure_fields(response: httpx.Response) -> tuple[str, str, str] | None:
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    error = body.get("error") if isinstance(body, dict) else None
+    details = error.get("details") if isinstance(error, dict) else None
+    if not isinstance(details, list):
+        return None
+
+    for detail in details:
+        if not isinstance(detail, dict):
+            continue
+        type_name = detail.get("@type")
+        violations = detail.get("violations")
+        if (
+            not isinstance(type_name, str)
+            or not type_name.endswith("/google.rpc.QuotaFailure")
+            or not isinstance(violations, list)
+        ):
+            continue
+        for violation in violations:
+            if not isinstance(violation, dict):
+                continue
+            labels: list[str] = []
+            for name in ("quotaId", "quotaMetric"):
+                value = violation.get(name)
+                labels.append(
+                    value
+                    if isinstance(value, str) and _SAFE_QUOTA_LABEL_RE.fullmatch(value)
+                    else "unknown"
+                )
+            quota_value = violation.get("quotaValue")
+            safe_value = (
+                quota_value
+                if isinstance(quota_value, str)
+                and _SAFE_QUOTA_VALUE_RE.fullmatch(quota_value)
+                else "unknown"
+            )
+            return labels[0], labels[1], safe_value
+    return None
 
 
 class GeminiEmbeddingModel:
@@ -67,6 +117,18 @@ class GeminiEmbeddingModel:
             headers={"x-goog-api-key": self._api_key},
             json=payload,
         )
+        if response.status_code == 429:
+            quota = _quota_failure_fields(response)
+            if quota is None:
+                _LOGGER.warning(
+                    "Gemini embedding rate limited; quota details unavailable"
+                )
+            else:
+                _LOGGER.warning(
+                    "Gemini embedding rate limited: quota_id=%s quota_metric=%s "
+                    "quota_value=%s",
+                    *quota,
+                )
         response.raise_for_status()
         body = response.json()
         embeddings = body.get("embeddings") if isinstance(body, dict) else None

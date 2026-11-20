@@ -104,6 +104,17 @@ class SettingsSecurityTests(unittest.TestCase):
 
         self.assertEqual("gemini-embedding-2", embedding.model)
         self.assertEqual(1024, embedding.dimension)
+        self.assertEqual(60, embedding.gemini_rpm_limit)
+
+    def test_gemini_embedding_rpm_limit_is_configurable_and_positive(self):
+        embedding = EmbeddingSettings(
+            _env_file=None,
+            GEMINI_EMBEDDING_RPM_LIMIT=32,
+        )
+        self.assertEqual(32, embedding.gemini_rpm_limit)
+
+        with self.assertRaises(ValidationError):
+            EmbeddingSettings(_env_file=None, GEMINI_EMBEDDING_RPM_LIMIT=0)
 
     def test_gemini_embedding_requires_api_key(self):
         settings = make_settings(secret="x" * 40)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import httpx
 import pytest
@@ -70,3 +71,50 @@ def test_gemini_embedding_rejects_malformed_vector_dimension():
             model.encode_query(["question"])
     finally:
         model.close()
+
+
+def test_gemini_embedding_logs_only_safe_quota_details(caplog):
+    model = GeminiEmbeddingModel(
+        api_key="test-key-never-log",
+        output_dimensionality=1024,
+        timeout_seconds=2,
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    429,
+                    request=request,
+                    json={
+                        "error": {
+                            "message": "sensitive upstream message",
+                            "details": [
+                                {
+                                    "@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                                    "violations": [
+                                        {
+                                            "quotaId": "EmbedContentRequestsPerMinutePerUserPerProject-FreeTier",
+                                            "quotaMetric": "generativelanguage.googleapis.com/embed_content_free_tier_requests",
+                                            "quotaValue": "100",
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    },
+                )
+            )
+        ),
+    )
+    caplog.set_level(logging.WARNING)
+    try:
+        with pytest.raises(httpx.HTTPStatusError):
+            model.encode_query(["question"])
+    finally:
+        model.close()
+
+    assert (
+        "quota_id=EmbedContentRequestsPerMinutePerUserPerProject-FreeTier"
+        in caplog.text
+    )
+    assert "quota_value=100" in caplog.text
+    assert "test-key-never-log" not in caplog.text
+    assert "sensitive upstream message" not in caplog.text

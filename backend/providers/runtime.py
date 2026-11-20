@@ -11,6 +11,7 @@ from backend.providers.embedding import (
     EmbeddingRuntime,
     EmbeddingService,
 )
+from backend.providers.embedding_rate_limit import RedisEmbeddingRequestPacer
 from backend.providers.loop_bridge import ProviderLoopBridge, provider_loop_bridge
 from backend.providers.rerank import (
     DisabledRerankerAdapter,
@@ -41,6 +42,16 @@ class ProviderRuntime:
         self.settings = settings or get_settings()
         self.bridge = bridge or provider_loop_bridge
         embedding = self.settings.embedding
+        is_gemini_embedding = embedding.model == "gemini-embedding-2"
+        self._embedding_request_pacer = (
+            RedisEmbeddingRequestPacer(
+                redis_url=self.settings.storage.redis_url.get_secret_value(),
+                key_prefix=self.settings.storage.redis_key_prefix,
+                requests_per_minute=embedding.gemini_rpm_limit,
+            )
+            if is_gemini_embedding
+            else None
+        )
         self.embedding_runtime = EmbeddingRuntime(
             model_name=embedding.model,
             model_revision=embedding.revision,
@@ -49,12 +60,20 @@ class ProviderRuntime:
             provider_name=embedding.model.rsplit("/", 1)[-1] or "embedding-model",
             encoder_concurrency=embedding.max_concurrency,
             executor_workers=embedding.executor_workers,
-            max_batch_size=embedding.query_max_batch_size,
+            max_batch_size=(
+                min(embedding.query_max_batch_size, embedding.gemini_rpm_limit)
+                if is_gemini_embedding
+                else embedding.query_max_batch_size
+            ),
             max_queue_size=embedding.query_queue_size,
             cache_size=embedding.query_cache_size,
             microbatch_window_seconds=embedding.query_microbatch_ms / 1000,
             expected_dimension=embedding.dimension,
-            default_timeout_seconds=embedding.timeout_seconds,
+            default_timeout_seconds=(
+                None if is_gemini_embedding else embedding.timeout_seconds
+            ),
+            model_timeout_seconds=embedding.timeout_seconds,
+            request_pacer=self._embedding_request_pacer,
         )
         self.embedding_service = EmbeddingService(
             runtime=self.embedding_runtime,
@@ -160,7 +179,11 @@ class ProviderRuntime:
                 self._reranker = self._reranker_factory(rerank)
             if self.settings.embedding.warmup_on_start:
                 await self.embedding_runtime.warmup(
-                    deadline=time.monotonic() + self.settings.embedding.timeout_seconds
+                    deadline=(
+                        None
+                        if self.settings.embedding.model == "gemini-embedding-2"
+                        else time.monotonic() + self.settings.embedding.timeout_seconds
+                    )
                 )
             self._started = True
 
@@ -180,6 +203,14 @@ class ProviderRuntime:
             errors.append(exc)
         finally:
             self._started = False
+
+        if self._embedding_request_pacer is not None:
+            try:
+                await self._embedding_request_pacer.aclose()
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                self._embedding_request_pacer = None
 
         if len(errors) == 1:
             raise errors[0]

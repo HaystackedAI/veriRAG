@@ -1,6 +1,7 @@
 import asyncio
 import time
 import unittest
+from unittest.mock import patch
 
 from backend.providers import (
     ProviderCallContext,
@@ -13,15 +14,25 @@ from backend.providers import (
 
 
 class FakeResponse:
-    def __init__(self, status_code, headers=None):
+    def __init__(self, status_code, headers=None, json_body=None):
         self.status_code = status_code
         self.headers = headers or {}
+        self._json_body = json_body
+
+    def json(self):
+        if self._json_body is None:
+            raise ValueError("no JSON body")
+        return self._json_body
 
 
 class FakeHttpError(RuntimeError):
-    def __init__(self, status_code, headers=None):
+    def __init__(self, status_code, headers=None, json_body=None):
         super().__init__("raw upstream failure")
-        self.response = FakeResponse(status_code, headers=headers)
+        self.response = FakeResponse(
+            status_code,
+            headers=headers,
+            json_body=json_body,
+        )
 
 
 class FakeTime:
@@ -60,6 +71,16 @@ class ProviderPolicyTests(unittest.TestCase):
         for kwargs in invalid:
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 ProviderPolicy(**kwargs)
+
+    def test_retry_jitter_is_bounded_and_server_retry_delay_is_a_floor(self):
+        policy = ProviderPolicy(
+            initial_backoff_seconds=4,
+            max_backoff_seconds=8,
+            retry_jitter=True,
+        )
+        with patch("backend.providers.core.random.uniform", return_value=0.75):
+            self.assertEqual(3.0, policy.retry_delay(1, None))
+            self.assertEqual(5.0, policy.retry_delay(1, 5.0))
 
 
 class SyncProviderExecutorTests(unittest.TestCase):
@@ -119,6 +140,38 @@ class SyncProviderExecutorTests(unittest.TestCase):
 
         self.assertEqual("ok", result)
         self.assertEqual([5.0], self.time.sleeps)
+
+    def test_google_retry_info_is_preferred_over_retry_after_header(self):
+        calls = 0
+
+        def operation():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise FakeHttpError(
+                    429,
+                    headers={"Retry-After": "1"},
+                    json_body={
+                        "error": {
+                            "details": [
+                                {
+                                    "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                                    "retryDelay": "4.25s",
+                                }
+                            ]
+                        }
+                    },
+                )
+            return "ok"
+
+        result = self.executor.call(
+            operation,
+            context=_context(),
+            policy=ProviderPolicy(max_attempts=2, max_retry_after_seconds=10),
+        )
+
+        self.assertEqual("ok", result)
+        self.assertEqual([4.25], self.time.sleeps)
 
     def test_retry_after_above_local_wait_limit_is_not_retried_early(self):
         calls = 0

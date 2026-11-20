@@ -127,6 +127,12 @@ class EmbeddingSettings(_EnvSettings):
         le=600,
         validation_alias="EMBEDDING_TIMEOUT_SECONDS",
     )
+    gemini_rpm_limit: int = Field(
+        default=60,
+        ge=1,
+        le=100_000,
+        validation_alias="GEMINI_EMBEDDING_RPM_LIMIT",
+    )
     executor_workers: int = Field(
         default=1,
         ge=1,

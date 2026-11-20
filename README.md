@@ -759,6 +759,10 @@ Case，并由独立 worker 执行。CLI 更适合仓库 Gate、分支比较与�
   schema 身份。默认使用 `gemini-embedding-2` 与 1024维输出。
 - `EMBEDDING_TIMEOUT_SECONDS`、`EMBEDDING_EXECUTOR_WORKERS`、`EMBEDDING_MAX_CONCURRENCY`：
   Embedding 执行与并发预算。
+- `GEMINI_EMBEDDING_RPM_LIMIT`：Gemini Embedding 每分钟文本条数上限，默认 60；本地限流按批中
+  的文本数累计，并通过 Redis 在 API 与索引 Worker 间共享。若 AI Studio 当前额度低于 60，应相应
+  调低此值。Gemini 限速器不可用时会 fail closed；`EMBEDDING_TIMEOUT_SECONDS` 仍限制单次 Provider
+  HTTP 请求。
 - `EMBEDDING_QUERY_MICROBATCH_MS`、`EMBEDDING_QUERY_MAX_BATCH_SIZE`、
   `EMBEDDING_QUERY_QUEUE_SIZE`、`EMBEDDING_QUERY_CACHE_SIZE`、`EMBEDDING_CACHE_NAMESPACE`：查询
   micro-batch、队列和缓存。

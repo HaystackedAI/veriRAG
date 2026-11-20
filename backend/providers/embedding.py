@@ -20,6 +20,7 @@ from backend.providers.core import (
     ProviderOperation,
     ProviderPolicy,
 )
+from backend.providers.embedding_rate_limit import EmbeddingRequestPacer
 from backend.providers.loop_bridge import ProviderLoopBridge
 
 
@@ -138,6 +139,8 @@ class EmbeddingRuntime:
         max_text_characters: int = 32768,
         expected_dimension: int | None = None,
         default_timeout_seconds: float | None = None,
+        model_timeout_seconds: float | None = None,
+        request_pacer: EmbeddingRequestPacer | None = None,
         cancellation_poll_seconds: float = 0.025,
         clock: Callable[[], float] = time.monotonic,
         async_sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -167,6 +170,10 @@ class EmbeddingRuntime:
             default_timeout_seconds <= 0 or not math.isfinite(default_timeout_seconds)
         ):
             raise ValueError("default_timeout_seconds must be positive and finite")
+        if model_timeout_seconds is not None and (
+            model_timeout_seconds <= 0 or not math.isfinite(model_timeout_seconds)
+        ):
+            raise ValueError("model_timeout_seconds must be positive and finite")
 
         self.model_name = (
             model_name or os.getenv("EMBEDDING_MODEL") or "BAAI/bge-m3"
@@ -191,7 +198,18 @@ class EmbeddingRuntime:
             clock=clock,
             async_sleeper=async_sleeper,
         )
-        self._policy = policy or ProviderPolicy(max_attempts=2)
+        if policy is not None:
+            self._policy = policy
+        elif self.model_name == "gemini-embedding-2":
+            self._policy = ProviderPolicy(
+                max_attempts=3,
+                initial_backoff_seconds=1.0,
+                max_backoff_seconds=60.0,
+                max_retry_after_seconds=300.0,
+                retry_jitter=True,
+            )
+        else:
+            self._policy = ProviderPolicy(max_attempts=2)
         self._encoder_concurrency = encoder_concurrency
         self._max_batch_size = max_batch_size
         self._max_queue_size = max_queue_size
@@ -202,6 +220,12 @@ class EmbeddingRuntime:
         self._cancellation_poll_seconds = float(cancellation_poll_seconds)
         self._dimension = expected_dimension
         self._default_timeout_seconds = default_timeout_seconds
+        self._model_timeout_seconds = (
+            model_timeout_seconds
+            if model_timeout_seconds is not None
+            else default_timeout_seconds
+        )
+        self._request_pacer = request_pacer
         self._clock = clock
 
         self._executor = ThreadPoolExecutor(
@@ -604,6 +628,8 @@ class EmbeddingRuntime:
         try:
             gate = self._require_encoder_gate()
             async with gate:
+                if self._request_pacer is not None:
+                    await self._request_pacer.wait(len(batch))
                 model = await self._get_model()
                 self._batches += 1
                 loop = asyncio.get_running_loop()
@@ -811,7 +837,7 @@ class EmbeddingRuntime:
             return GeminiEmbeddingModel(
                 api_key=self._api_key,
                 output_dimensionality=1024,
-                timeout_seconds=self._default_timeout_seconds or 15.0,
+                timeout_seconds=self._model_timeout_seconds or 15.0,
             )
 
         from sentence_transformers import SentenceTransformer

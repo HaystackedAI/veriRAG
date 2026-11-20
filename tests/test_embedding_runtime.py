@@ -53,6 +53,14 @@ class InvalidVectorModel(RecordingModel):
         return [[math.nan] for _ in texts]
 
 
+class RecordingPacer:
+    def __init__(self):
+        self.costs = []
+
+    async def wait(self, cost):
+        self.costs.append(cost)
+
+
 class EmbeddingRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_lazy_query_encoding_normalizes_text_and_keeps_loop_responsive(self):
         model = RecordingModel(delay=0.05)
@@ -121,6 +129,28 @@ class EmbeddingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, len(model.query_calls))
         self.assertGreaterEqual(runtime.stats().cache_hits, 1)
         self.assertGreaterEqual(runtime.stats().inflight_joins, 1)
+        await runtime.close()
+
+    async def test_request_pacer_receives_each_microbatch_text_count(self):
+        model = RecordingModel()
+        pacer = RecordingPacer()
+        runtime = EmbeddingRuntime(
+            model_name="test-embedding-model",
+            model_factory=lambda: model,
+            request_pacer=pacer,
+            policy=ProviderPolicy(max_attempts=1),
+            max_batch_size=16,
+            microbatch_window_seconds=0,
+        )
+
+        vectors = await runtime.embed_documents(
+            [f"document {index}" for index in range(33)]
+        )
+
+        self.assertEqual(33, len(vectors))
+        self.assertEqual(33, sum(pacer.costs))
+        self.assertEqual(3, len(pacer.costs))
+        self.assertTrue(all(1 <= cost <= 16 for cost in pacer.costs))
         await runtime.close()
 
     async def test_document_batches_are_bounded_and_use_document_semantics(self):

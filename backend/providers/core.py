@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import random
 import re
 import time
 from collections.abc import Awaitable, Buffer, Callable, Iterator
@@ -182,6 +183,7 @@ class ProviderPolicy:
     max_backoff_seconds: float = 2.0
     max_retry_after_seconds: float = 30.0
     backoff_multiplier: float = 2.0
+    retry_jitter: bool = False
     cancellation_poll_seconds: float = 0.05
 
     def __post_init__(self) -> None:
@@ -206,6 +208,8 @@ class ProviderPolicy:
             raise ValueError("initial backoff cannot exceed max backoff")
         if self.backoff_multiplier < 1:
             raise ValueError("backoff_multiplier must be at least 1")
+        if not isinstance(self.retry_jitter, bool):
+            raise TypeError("retry_jitter must be a boolean")
         if self.cancellation_poll_seconds <= 0:
             raise ValueError("cancellation_poll_seconds must be positive")
 
@@ -219,6 +223,8 @@ class ProviderPolicy:
         except OverflowError:
             exponential = self.max_backoff_seconds
         delay = min(exponential, self.max_backoff_seconds)
+        if self.retry_jitter and delay > 0:
+            delay *= random.uniform(0.5, 1.0)
         if retry_after_seconds is not None:
             delay = max(delay, retry_after_seconds)
         return delay
@@ -405,10 +411,49 @@ def _parse_retry_after(value: Any) -> float | None:
     return max((retry_at.astimezone(UTC) - datetime.now(UTC)).total_seconds(), 0.0)
 
 
+def _retry_info_seconds(exc: BaseException) -> float | None:
+    response = getattr(exc, "response", None)
+    json_method = getattr(response, "json", None)
+    if not callable(json_method):
+        return None
+    try:
+        body = json_method()
+    except ValueError:
+        return None
+    error = body.get("error") if isinstance(body, dict) else None
+    details = error.get("details") if isinstance(error, dict) else None
+    if not isinstance(details, list):
+        return None
+    for detail in details:
+        if not isinstance(detail, dict):
+            continue
+        type_name = detail.get("@type")
+        if not isinstance(type_name, str) or not type_name.endswith(
+            "/google.rpc.RetryInfo"
+        ):
+            continue
+        retry_delay = detail.get("retryDelay")
+        if isinstance(retry_delay, str):
+            match = re.fullmatch(r"((?:\d+(?:\.\d*)?)|(?:\.\d+))s", retry_delay)
+            if match is not None:
+                return _finite_non_negative(float(match.group(1)))
+        if isinstance(retry_delay, dict):
+            seconds = _finite_non_negative(retry_delay.get("seconds", 0))
+            nanos = _finite_non_negative(retry_delay.get("nanos", 0))
+            if seconds is not None and nanos is not None and nanos < 1_000_000_000:
+                return seconds + nanos / 1_000_000_000
+    return None
+
+
 def _retry_after_seconds(exc: BaseException) -> float | None:
     for item in _exception_chain(exc):
+        parsed = _finite_non_negative(getattr(item, "retry_after_seconds", None))
+        if parsed is not None:
+            return parsed
+        parsed = _retry_info_seconds(item)
+        if parsed is not None:
+            return parsed
         for value in (
-            getattr(item, "retry_after_seconds", None),
             getattr(item, "retry_after", None),
             _header_value(_headers(item), "Retry-After"),
         ):
