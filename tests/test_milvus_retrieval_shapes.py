@@ -1,7 +1,9 @@
 import importlib.util
+import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from pymilvus.exceptions import ParamError
 
@@ -14,6 +16,38 @@ SPEC = importlib.util.spec_from_file_location(
 milvus = importlib.util.module_from_spec(SPEC)
 sys.modules[MODULE_NAME] = milvus
 SPEC.loader.exec_module(milvus)
+
+
+class MilvusConnectionSettingsTests(unittest.TestCase):
+    def test_cloud_url_and_token_are_loaded_and_passed_to_client(self):
+        with patch.dict(
+            os.environ,
+            {
+                "MILVUS_URL": "https://milvus.example.test",
+                "MILVUS_TOKEN": "test-token",
+                "MILVUS_HOST": "localhost",
+                "MILVUS_PORT": "19530",
+                "MILVUS_COLLECTION": "test_collection",
+                "MILVUS_TIMEOUT": "7",
+            },
+        ):
+            settings = milvus.MilvusSettings.from_env()
+
+        self.assertEqual("https://milvus.example.test", settings.uri)
+        self.assertEqual("test-token", settings.token)
+        client = MagicMock()
+        with patch.object(
+            milvus, "MilvusClient", return_value=client
+        ) as client_factory:
+            with milvus.milvus_client_session(settings):
+                pass
+
+        client_factory.assert_called_once_with(
+            uri="https://milvus.example.test",
+            token="test-token",
+            timeout=7.0,
+        )
+        client.close.assert_called_once_with()
 
 
 class MilvusRetrievalShapeTests(unittest.TestCase):

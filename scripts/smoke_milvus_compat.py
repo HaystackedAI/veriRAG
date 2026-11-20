@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+# ruff: noqa: E402
+
 import json
 import os
 from collections.abc import Mapping
@@ -9,7 +11,11 @@ from uuid import uuid4
 
 import pymilvus
 
-from backend.indexing.milvus_client import MilvusSettings, MilvusStore
+from backend.env import load_env
+
+load_env()
+
+from backend.indexing.milvus_client import MilvusStore
 from backend.security.milvus_filters import and_filter, eq_filter, version_scope_filter
 
 
@@ -46,21 +52,11 @@ def _row(
 
 
 def main() -> int:
-    host = os.getenv("MILVUS_HOST", "127.0.0.1")
-    port = os.getenv("MILVUS_PORT", "19530")
     collection = os.getenv(
         "MILVUS_SMOKE_COLLECTION",
         f"supermew_compat_smoke_{uuid4().hex[:12]}",
     )
-    store = MilvusStore(
-        MilvusSettings(
-            host=host,
-            port=port,
-            collection_name=collection,
-            uri=f"http://{host}:{port}",
-            timeout=30.0,
-        )
-    )
+    store = MilvusStore().with_collection(collection)
     store.drop_collection()
     try:
         store.init_versioned_collection(dense_dim=4)

@@ -771,7 +771,8 @@ Case，并由独立 worker 执行。CLI 更适合仓库 Gate、分支比较与�
 ### 存储、Milvus 与 Document Version
 
 - `DATABASE_URL`、`REDIS_URL`、`REDIS_KEY_PREFIX`：业务事实、通知、缓存和限流连接。
-- `MILVUS_HOST`、`MILVUS_PORT`、`MILVUS_COLLECTION`、`MILVUS_TIMEOUT`：Milvus Adapter。
+- `MILVUS_URL`（设置后覆盖 Host/Port）、`MILVUS_TOKEN`（可选认证）、`MILVUS_HOST`、
+  `MILVUS_PORT`、`MILVUS_COLLECTION`、`MILVUS_TIMEOUT`：Milvus Adapter。
 - `UPLOAD_DIR`：source object 持久目录；API 与索引 worker 必须指向同一位置。
 - `MAX_UPLOAD_BYTES`、`MAX_DOCUMENT_PAGES`、`MAX_PAGE_CHARACTERS`、`PARSER_TIMEOUT_SECONDS`：
   单文件与解析预算。
