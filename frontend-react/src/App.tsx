@@ -12,9 +12,17 @@ import {
 } from '@/auth/session';
 import { createThread, getThreadMessages, listThreads } from '@/threads/threadClient';
 import { createRun, getRun } from '@/runs/runClient';
-import { getCapabilityCatalog } from '@/capabilities/capabilityClient';
+import {
+    getCapabilityCatalog,
+    getCapabilityControlPlane,
+    updateWebResearchConfig,
+} from '@/capabilities/capabilityClient';
 import { createWebResearchMessage } from '@/capabilities/webResearchMessage';
-import type { CapabilityAvailabilityReason, CapabilitySkill } from '@/types/capabilities';
+import type {
+    CapabilityAvailabilityReason,
+    CapabilityControlPlane,
+    CapabilitySkill,
+} from '@/types/capabilities';
 import type { ThreadSummary } from '@/types/threads';
 import superMewMark from '@/assets/images/supermew-mark.png';
 import superMewMascot from '@/assets/images/supermew-mascot.webp';
@@ -56,6 +64,12 @@ export default function App() {
     const [webResearchAvailabilityReason, setWebResearchAvailabilityReason] =
         useState<CapabilityAvailabilityReason>(null);
     const [webResearchError, setWebResearchError] = useState('');
+    const [capabilityControlPlane, setCapabilityControlPlane] =
+        useState<CapabilityControlPlane | null>(null);
+    const [capabilityControlLoading, setCapabilityControlLoading] = useState(false);
+    const [capabilityControlSaving, setCapabilityControlSaving] = useState(false);
+    const [capabilityControlError, setCapabilityControlError] = useState('');
+    const [capabilityControlNotice, setCapabilityControlNotice] = useState('');
 
     useEffect(() => {
         document.documentElement.dataset.theme = theme;
@@ -125,6 +139,35 @@ export default function App() {
     }, [session?.username]);
 
     useEffect(() => {
+        if (nav !== 'capabilities' || session?.role !== 'admin') return;
+
+        let current = true;
+        setCapabilityControlPlane(null);
+        setCapabilityControlLoading(true);
+        setCapabilityControlSaving(false);
+        setCapabilityControlError('');
+        setCapabilityControlNotice('');
+        void getCapabilityControlPlane()
+            .then((controlPlane) => {
+                if (current) setCapabilityControlPlane(controlPlane);
+            })
+            .catch((error: unknown) => {
+                if (current) {
+                    setCapabilityControlError(
+                        error instanceof Error ? error.message : '能力控制面加载失败。'
+                    );
+                }
+            })
+            .finally(() => {
+                if (current) setCapabilityControlLoading(false);
+            });
+
+        return () => {
+            current = false;
+        };
+    }, [nav, session?.role, session?.username]);
+
+    useEffect(() => {
         const container = document.querySelector('.chat-container');
         if (container) container.scrollTop = container.scrollHeight;
     }, [messages]);
@@ -178,6 +221,41 @@ export default function App() {
         setMessages([]);
         setThreadId('');
         setAuthLoading(false);
+    };
+
+    const toggleWebResearch = async () => {
+        if (!capabilityControlPlane || capabilityControlSaving || !session) return;
+        const username = session.username;
+        const enabled = !capabilityControlPlane.web_research.enabled;
+        setCapabilityControlSaving(true);
+        setCapabilityControlError('');
+        setCapabilityControlNotice('');
+        setWebResearchStatus('loading');
+        setWebResearchError('');
+
+        try {
+            const updated = await updateWebResearchConfig(enabled);
+            if (getAuthSession()?.username !== username) return;
+            setCapabilityControlPlane(updated);
+            setCapabilityControlNotice(`网络研究已${enabled ? '启用' : '停用'}。`);
+
+            const catalog = await getCapabilityCatalog();
+            if (getAuthSession()?.username !== username) return;
+            const skill = catalog.skills.find((item) => item.name === 'web-research') || null;
+            setWebResearchSkill(skill);
+            setWebResearchAvailabilityReason(skill?.availability_reason ?? 'not_configured');
+            setWebResearchStatus('ready');
+            if (!skill?.available) setSelectedMode(null);
+        } catch (error: unknown) {
+            if (getAuthSession()?.username === username) {
+                const message = error instanceof Error ? error.message : '网络研究配置更新失败。';
+                setCapabilityControlError(message);
+                setWebResearchError(message);
+                setWebResearchStatus('error');
+            }
+        } finally {
+            if (getAuthSession()?.username === username) setCapabilityControlSaving(false);
+        }
     };
 
     const sendMessage = async () => {
@@ -682,7 +760,7 @@ export default function App() {
                                                             : webResearchAvailabilityReason === 'permission_required'
                                                               ? '当前账号权限不足'
                                                               : webResearchAvailabilityReason === 'not_configured'
-                                                                ? '网络研究运行配置尚未就绪'
+                                                                ? '请管理员在 Skill / Tool 管理中启用'
                                                                 : undefined
                                                     }
                                                     onClick={() => setSelectedMode('web-research')}
@@ -699,7 +777,7 @@ export default function App() {
                                                               : webResearchAvailabilityReason ===
                                                                   'permission_required'
                                                                 ? '当前账号权限不足'
-                                                                : '运行配置尚未就绪'}
+                                                                : '需管理员启用网络研究'}
                                                     </small>
                                                 </button>
                                                 <button type="button" onClick={() => setNav('chat')}>
@@ -830,16 +908,79 @@ export default function App() {
                             </aside>
                         </div>
                     ) : (
-                        <section className="chat-area" style={{ width: '100%', padding: 32 }}>
-                            <h1>
-                                {nav === 'settings'
-                                    ? '知识库'
-                                    : nav === 'models'
-                                        ? '模型中心'
-                                        : nav === 'capabilities'
-                                            ? 'Skill / Tool 管理'
-                                            : 'RAG 评估'}
-                            </h1>
+                        <section
+                            className={`chat-area${nav === 'capabilities' ? ' capability-admin-page' : ''}`}
+                            style={{ width: '100%', padding: 32 }}
+                        >
+                            {nav === 'capabilities' ? (
+                                <>
+                                    <h1>Skill / Tool 管理</h1>
+                                    {capabilityControlError && (
+                                        <p className="operation-notice is-error" role="alert">
+                                            {capabilityControlError}
+                                        </p>
+                                    )}
+                                    {capabilityControlNotice && (
+                                        <p className="operation-notice" role="status">
+                                            {capabilityControlNotice}
+                                        </p>
+                                    )}
+                                    {capabilityControlLoading ? (
+                                        <div className="admin-loading" role="status">
+                                            <i className="fa-solid fa-spinner fa-spin" aria-hidden="true" />
+                                            正在加载能力配置…
+                                        </div>
+                                    ) : capabilityControlPlane ? (
+                                        <article className="web-research-admin-card">
+                                            <div className="web-research-admin-card-header">
+                                                <div>
+                                                    <span className="panel-eyebrow">Web Research</span>
+                                                    <h2>Tavily Keyless</h2>
+                                                </div>
+                                                <span
+                                                    className={
+                                                        capabilityControlPlane.web_research.enabled
+                                                            ? 'web-research-status is-enabled'
+                                                            : 'web-research-status'
+                                                    }
+                                                >
+                                                    {capabilityControlPlane.web_research.enabled
+                                                        ? '已启用'
+                                                        : '已停用'}
+                                                </span>
+                                            </div>
+                                            <p>
+                                                网络研究通过 Tavily Keyless 查询公开来源，<strong>不需要 API
+                                                Key</strong>。启用后还需确保后端可出站访问 Tavily。
+                                            </p>
+                                            <button
+                                                type="button"
+                                                className="btn-primary"
+                                                disabled={capabilityControlSaving}
+                                                onClick={() => void toggleWebResearch()}
+                                            >
+                                                {capabilityControlSaving ? (
+                                                    <i
+                                                        className="fa-solid fa-spinner fa-spin"
+                                                        aria-hidden="true"
+                                                    />
+                                                ) : null}
+                                                {capabilityControlPlane.web_research.enabled
+                                                    ? '停用网络研究'
+                                                    : '启用网络研究'}
+                                            </button>
+                                        </article>
+                                    ) : null}
+                                </>
+                            ) : (
+                                <h1>
+                                    {nav === 'settings'
+                                        ? '知识库'
+                                        : nav === 'models'
+                                          ? '模型中心'
+                                          : 'RAG 评估'}
+                                </h1>
+                            )}
                         </section>
                     )}
                 </main>

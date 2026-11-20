@@ -114,3 +114,75 @@ test('selects web research and sends its explicit skill activation', async ({ pa
   expect(unauthorizedUrls, 'unexpected unauthorized response URLs').toEqual([]);
   await expect(page.getByText('已基于公开来源完成调研。')).toBeVisible();
 });
+
+test('admin can enable web research from the capability control page', async ({ page }) => {
+  let enabled = false;
+  let updatePayload: Record<string, unknown> | null = null;
+  const controlPlane = () => ({
+    schema_version: 1,
+    web_research: {
+      enabled,
+      provider: 'tavily-keyless',
+      api_key_required: false,
+    },
+    sql_assistant: {},
+    skills: [],
+    custom_tools: [],
+    builtin_tools: [],
+  });
+
+  await page.route('**/auth/refresh', async (route) => {
+    await route.fulfill({
+      json: { access_token: 'admin-token', username: 'admin-user', role: 'admin' },
+    });
+  });
+  await page.route('**/v1/threads', async (route) => {
+    await route.fulfill({ json: { threads: [] } });
+  });
+  await page.route('**/v1/capabilities', async (route) => {
+    await route.fulfill({
+      json: {
+        schema_version: 1,
+        catalog_hash: 'b'.repeat(64),
+        skills: [
+          {
+            name: 'web-research',
+            version: '1.0.0',
+            description: 'Research current public information.',
+            activation: '/web-research',
+            available: enabled,
+            availability_reason: enabled ? null : 'not_configured',
+            required_roles: [],
+            tool_names: ['web_search', 'web_fetch'],
+            approval_tools: [],
+            network_policies: ['restricted'],
+            resource_scopes: ['public-web'],
+          },
+        ],
+        tools: [],
+      },
+    });
+  });
+  await page.route('**/v1/capabilities/control-plane', async (route) => {
+    await route.fulfill({ json: controlPlane() });
+  });
+  await page.route('**/v1/capabilities/web-research', async (route) => {
+    updatePayload = route.request().postDataJSON();
+    enabled = updatePayload.enabled === true;
+    await route.fulfill({ json: controlPlane() });
+  });
+
+  await page.goto('/');
+  await expect(page.getByText('admin-user')).toBeVisible();
+  await page.getByRole('button', { name: 'Skill / Tool' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Tavily Keyless' })).toBeVisible();
+  await expect(page.getByText(/不需要 API Key/)).toBeVisible();
+  await page.getByRole('button', { name: '启用网络研究' }).click();
+
+  await expect(page.getByText('网络研究已启用。')).toBeVisible();
+  expect(updatePayload).toEqual({ enabled: true });
+
+  await page.getByRole('button', { name: '智能对话' }).click();
+  await expect(page.getByRole('button', { name: /网络研究/ })).toBeEnabled();
+});

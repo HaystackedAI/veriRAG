@@ -1386,6 +1386,48 @@ html[data-theme='light'] .welcome-avatar {
   color: var(--muted);
 }
 
+.web-research-admin-card {
+  max-width: 760px;
+  margin-top: 20px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+}
+
+.web-research-admin-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.web-research-admin-card-header h2 {
+  margin: 6px 0 0;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.web-research-admin-card > p {
+  margin: 14px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.web-research-status {
+  padding: 5px 9px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  font-size: 11px;
+}
+
+.web-research-status.is-enabled {
+  color: var(--success);
+  background: var(--success-soft);
+}
+
 .welcome-capabilities {
   display: flex;
   flex-wrap: wrap;
