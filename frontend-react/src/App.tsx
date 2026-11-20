@@ -1,5 +1,5 @@
-import { FormEvent, KeyboardEvent, lazy, Suspense, useEffect, useState } from 'react';
-import api from '@/utils/api';
+import { FormEvent, KeyboardEvent, lazy, Suspense, useEffect, useRef, useState } from 'react';
+import api, { getPublicError } from '@/utils/api';
 import { getSupabaseClient } from '@/auth/supabase';
 import {
     clearAuthSession,
@@ -11,17 +11,19 @@ import {
     type AuthSession,
 } from '@/auth/session';
 import { createThread, getThreadMessages, listThreads } from '@/threads/threadClient';
-import { createRun, getRun } from '@/runs/runClient';
+import { createRun, getRun, getRunEvents } from '@/runs/runClient';
+import { applyRunEvent, initialRunEventState, type RunEventState } from '@/events/runEventReducer';
 import { getCapabilityCatalog } from '@/capabilities/capabilityClient';
 import { createWebResearchMessage } from '@/capabilities/webResearchMessage';
 import type {
     CapabilityAvailabilityReason,
     CapabilitySkill,
 } from '@/types/capabilities';
-import type { ThreadSummary } from '@/types/threads';
+import type { ThreadMessage, ThreadSummary } from '@/types/threads';
+import type { EvidenceMessage } from '@/components/Chat/LiveEvidencePanel';
+import LiveEvidencePanel from '@/components/Chat/LiveEvidencePanel';
 import superMewMark from '@/assets/images/supermew-mark.png';
 import superMewMascot from '@/assets/images/supermew-mascot.webp';
-import emptyEvidence from '@/assets/images/empty-evidence.webp';
 import emptyHistory from '@/assets/images/empty-history.webp';
 
 const CapabilityAdminPage = lazy(() => import('@/components/Capabilities/CapabilityAdminPage'));
@@ -29,10 +31,44 @@ const CapabilityAdminPage = lazy(() => import('@/components/Capabilities/Capabil
 type Theme = 'dark' | 'light';
 type Nav = 'chat' | 'history' | 'settings' | 'models' | 'capabilities' | 'evaluations';
 
-interface Message {
-    id: string;
-    isUser: boolean;
-    text: string;
+type Message = EvidenceMessage;
+
+async function replayRunEvents(
+    initialState: RunEventState,
+    token: string
+): Promise<RunEventState> {
+    let current = initialState;
+    while (true) {
+        const response = await getRunEvents(current.runId, token, {
+            after: current.lastSequence,
+            limit: 1000,
+        });
+        if (!response.events.length) return current;
+        for (const event of response.events) {
+            const previousSequence = current.lastSequence;
+            current = applyRunEvent(current, event);
+            if (event.sequence > previousSequence && current.lastSequence === previousSequence) {
+                throw getPublicError({
+                    code: 'STREAM_PROTOCOL_ERROR',
+                    retryable: true,
+                    category: 'stream',
+                });
+            }
+        }
+        if (response.events.length < 1000) return current;
+    }
+}
+
+function toMessage(message: ThreadMessage): Message | null {
+    if (message.role === 'system') return null;
+    return {
+        id: `m-${message.id}`,
+        runId: message.run_id || undefined,
+        isUser: message.role === 'user',
+        text: message.content,
+        status: message.status,
+        ragTrace: message.rag_trace,
+    };
 }
 
 export default function App() {
@@ -50,8 +86,11 @@ export default function App() {
     const [threads, setThreads] = useState<ThreadSummary[]>([]);
     const [threadId, setThreadId] = useState('');
     const [messages, setMessages] = useState<Message[]>([]);
+    const [runState, setRunState] = useState<RunEventState | null>(null);
+    const [eventError, setEventError] = useState('');
     const [input, setInput] = useState('');
     const [sending, setSending] = useState(false);
+    const [sendingThreadId, setSendingThreadId] = useState('');
     const [historyOpen, setHistoryOpen] = useState(false);
     const [selectedMode, setSelectedMode] = useState<'web-research' | null>(null);
     const [webResearchSkill, setWebResearchSkill] = useState<CapabilitySkill | null>(null);
@@ -61,6 +100,7 @@ export default function App() {
     const [webResearchAvailabilityReason, setWebResearchAvailabilityReason] =
         useState<CapabilityAvailabilityReason>(null);
     const [webResearchError, setWebResearchError] = useState('');
+    const threadLoadGeneration = useRef(0);
 
     useEffect(() => {
         document.documentElement.dataset.theme = theme;
@@ -177,11 +217,15 @@ export default function App() {
 
     const logout = async () => {
         setAuthLoading(true);
+        threadLoadGeneration.current += 1;
         await revokeRefreshSession().catch(() => undefined);
         clearAuthSession();
         setThreads([]);
         setMessages([]);
         setThreadId('');
+        setRunState(null);
+        setEventError('');
+        setSendingThreadId('');
         setAuthLoading(false);
     };
 
@@ -209,22 +253,124 @@ export default function App() {
         }
     };
 
+    const openThread = async (targetThreadId: string) => {
+        const currentSession = getAuthSession();
+        if (!currentSession) return;
+        const generation = ++threadLoadGeneration.current;
+        setThreadId(targetThreadId);
+        setMessages([]);
+        setRunState(null);
+        setEventError('');
+        setSelectedMode(null);
+        setHistoryOpen(false);
+        setNav('chat');
+
+        try {
+            const page = await getThreadMessages(targetThreadId, { limit: 200 });
+            if (
+                generation !== threadLoadGeneration.current ||
+                getAuthSession()?.username !== currentSession.username
+            ) {
+                return;
+            }
+            const orderedMessages = [...page.messages].sort(
+                (left, right) => left.sequence - right.sequence
+            );
+            setMessages(
+                orderedMessages
+                    .map(toMessage)
+                    .filter((message): message is Message => message !== null)
+            );
+            const latestAssistant = [...orderedMessages]
+                .reverse()
+                .find((message) => message.role === 'assistant' && message.run_id);
+            if (!latestAssistant?.run_id) return;
+
+            let projection = initialRunEventState(latestAssistant.run_id, targetThreadId);
+            setRunState(projection);
+            try {
+                projection = await replayRunEvents(projection, currentSession.access_token);
+                if (
+                    generation !== threadLoadGeneration.current ||
+                    getAuthSession()?.username !== currentSession.username
+                ) {
+                    return;
+                }
+                setRunState(projection);
+                setMessages((current) =>
+                    generation === threadLoadGeneration.current
+                        ? current.map((message) =>
+                              message.runId === projection.runId && !message.isUser
+                                  ? {
+                                        ...message,
+                                        runTimeline: projection.timeline,
+                                        runActiveDurationMs: projection.activeDurationMs,
+                                        runActiveStartedAt: projection.activeStartedAt,
+                                    }
+                                  : message
+                          )
+                        : current
+                );
+            } catch (error: unknown) {
+                if (generation === threadLoadGeneration.current) {
+                    setEventError(
+                        error instanceof Error ? error.message : '运行轨迹加载失败，请稍后重试。'
+                    );
+                }
+            }
+        } catch (error: unknown) {
+            if (generation === threadLoadGeneration.current) {
+                setEventError(
+                    error instanceof Error ? error.message : '历史对话加载失败，请稍后重试。'
+                );
+            }
+        }
+    };
+
     const sendMessage = async () => {
         const text = input.trim();
         if (!text || !session || sending) return;
+        let generation = threadLoadGeneration.current;
+        const isCurrentThread = () =>
+            generation === threadLoadGeneration.current &&
+            getAuthSession()?.username === session.username;
+        const pendingAssistantId = `a-pending-${Date.now()}`;
+        let assistantMessageId = pendingAssistantId;
+        let projection: RunEventState | null = null;
+        let completedMessage: ThreadMessage | null = null;
         const executionMessage =
             selectedMode === 'web-research' && webResearchSkill
                 ? createWebResearchMessage(text, webResearchSkill.activation)
                 : text;
         setSending(true);
+        setSendingThreadId(threadId);
         setInput('');
-        setMessages((current) => [...current, { id: `u-${Date.now()}`, isUser: true, text }]);
+        setRunState(null);
+        setEventError('');
+        setMessages((current) =>
+            isCurrentThread()
+                ? [
+                      ...current,
+                      { id: `u-${Date.now()}`, isUser: true, text },
+                      {
+                          id: pendingAssistantId,
+                          isUser: false,
+                          text: '',
+                          status: 'queued',
+                          isThinking: true,
+                      },
+                  ]
+                : current
+        );
         try {
             let targetThreadId = threadId;
             if (!targetThreadId) {
                 const thread = await createThread();
+                if (!isCurrentThread()) return;
                 targetThreadId = thread.thread_id;
+                generation = ++threadLoadGeneration.current;
                 setThreadId(targetThreadId);
+                setSendingThreadId(targetThreadId);
                 setThreads((current) => [
                     {
                         thread_id: thread.thread_id,
@@ -239,6 +385,7 @@ export default function App() {
                     ...current,
                 ]);
             }
+            if (!isCurrentThread()) return;
             const created = await createRun(
                 targetThreadId,
                 {
@@ -247,45 +394,195 @@ export default function App() {
                 },
                 session.access_token
             );
+            if (!isCurrentThread()) return;
             let run = created.run;
+            assistantMessageId = `a-${run.id}`;
+            projection = initialRunEventState(run.id, targetThreadId);
+            setRunState(projection);
+            setMessages((current) =>
+                isCurrentThread()
+                    ? current.map((message) =>
+                          message.id === pendingAssistantId
+                              ? {
+                                    ...message,
+                                    id: assistantMessageId,
+                                    runId: run.id,
+                                    status: run.status,
+                                }
+                              : message
+                      )
+                    : current
+            );
+
+            const refreshEventProjection = async (runStatus: string) => {
+                if (!projection) return;
+                const currentProjection = projection;
+                try {
+                    const nextProjection = await replayRunEvents(
+                        currentProjection,
+                        session.access_token
+                    );
+                    projection = nextProjection;
+                    if (!isCurrentThread()) return;
+                    setRunState(nextProjection);
+                    setEventError('');
+                    const displayStatus =
+                        nextProjection.status === 'idle' ? runStatus : nextProjection.status;
+                    setMessages((current) =>
+                        isCurrentThread()
+                            ? current.map((message) =>
+                                  message.id === assistantMessageId
+                                      ? {
+                                            ...message,
+                                            text: nextProjection.messageText || message.text,
+                                            status: nextProjection.messageStatus || displayStatus,
+                                            isThinking:
+                                                !nextProjection.terminal &&
+                                                [
+                                                    'creating',
+                                                    'queued',
+                                                    'pending',
+                                                    'running',
+                                                    'cancelling',
+                                                ].includes(displayStatus),
+                                            runTimeline: nextProjection.timeline,
+                                            runActiveDurationMs: nextProjection.activeDurationMs,
+                                            runActiveStartedAt: nextProjection.activeStartedAt,
+                                        }
+                                      : message
+                              )
+                            : current
+                    );
+                    if (nextProjection.messageStatus === 'completed' && !completedMessage) {
+                        const messagePage = await getThreadMessages(targetThreadId, { limit: 200 });
+                        if (!isCurrentThread()) return;
+                        const persistedMessage =
+                            messagePage.messages.find(
+                                (message) =>
+                                    message.id === run.assistant_message_id &&
+                                    message.role === 'assistant'
+                            ) || null;
+                        completedMessage = persistedMessage;
+                        if (persistedMessage) {
+                            setMessages((current) =>
+                                isCurrentThread()
+                                    ? current.map((message) =>
+                                          message.id === assistantMessageId
+                                              ? {
+                                                    ...message,
+                                                    text: persistedMessage.content,
+                                                    status: persistedMessage.status,
+                                                    isThinking: false,
+                                                    ragTrace: persistedMessage.rag_trace,
+                                                }
+                                              : message
+                                      )
+                                    : current
+                            );
+                        }
+                    }
+                } catch (error: unknown) {
+                    if (!isCurrentThread()) return;
+                    setRunState(projection);
+                    setEventError(
+                        error instanceof Error ? error.message : '运行轨迹加载失败，请稍后重试。'
+                    );
+                }
+            };
+
+            await refreshEventProjection(run.status);
             while (run.status === 'queued' || run.status === 'pending' || run.status === 'running') {
                 await new Promise((resolve) => window.setTimeout(resolve, 750));
+                if (!isCurrentThread()) return;
                 run = await getRun(run.id, session.access_token);
+                await refreshEventProjection(run.status);
             }
+            if (!isCurrentThread()) return;
             if (run.status === 'succeeded') {
-                const messagePage = await getThreadMessages(targetThreadId, { limit: 200 });
-                const assistantMessage = messagePage.messages.find(
-                    (message) => message.id === run.assistant_message_id && message.role === 'assistant'
+                let assistantMessage: ThreadMessage | null = completedMessage;
+                if (!assistantMessage) {
+                    const messagePage = await getThreadMessages(targetThreadId, { limit: 200 });
+                    if (!isCurrentThread()) return;
+                    assistantMessage =
+                        messagePage.messages.find(
+                            (message) =>
+                                message.id === run.assistant_message_id &&
+                                message.role === 'assistant'
+                        ) || null;
+                }
+                setMessages((current) =>
+                    isCurrentThread()
+                        ? current.map((message) =>
+                              message.id === assistantMessageId
+                                  ? {
+                                        ...message,
+                                        text:
+                                            assistantMessage?.content ||
+                                            projection?.messageText ||
+                                            '运行已完成，但没有返回助手内容。',
+                                        status: assistantMessage?.status || 'completed',
+                                        isThinking: false,
+                                        ragTrace: assistantMessage?.rag_trace || null,
+                                        runTimeline: projection?.timeline || message.runTimeline,
+                                        runActiveDurationMs:
+                                            projection?.activeDurationMs ?? message.runActiveDurationMs,
+                                        runActiveStartedAt:
+                                            projection?.activeStartedAt ?? message.runActiveStartedAt,
+                                    }
+                                  : message
+                          )
+                        : current
                 );
-                setMessages((current) => [
-                    ...current,
-                    {
-                        id: `a-${run.id}`,
-                        isUser: false,
-                        text: assistantMessage?.content || '运行已完成，但没有返回助手内容。',
-                    },
-                ]);
             } else {
-                setMessages((current) => [
-                    ...current,
-                    {
-                        id: `a-${run.id}`,
-                        isUser: false,
-                        text: run.error?.message || '运行未完成，请稍后重新连接。',
-                    },
-                ]);
+                setMessages((current) =>
+                    isCurrentThread()
+                        ? current.map((message) =>
+                              message.id === assistantMessageId
+                                  ? {
+                                        ...message,
+                                        text:
+                                            run.status === 'waiting_input'
+                                                ? projection?.pendingHitl?.prompt ||
+                                                  '运行正在等待补充信息。'
+                                                : run.error?.message ||
+                                                  '运行未完成，请稍后重新连接。',
+                                        status: run.status,
+                                        isThinking: false,
+                                        isHitlRequest: run.status === 'waiting_input',
+                                        runTimeline: projection?.timeline || message.runTimeline,
+                                        runActiveDurationMs:
+                                            projection?.activeDurationMs ?? message.runActiveDurationMs,
+                                        runActiveStartedAt:
+                                            projection?.activeStartedAt ?? message.runActiveStartedAt,
+                                    }
+                                  : message
+                          )
+                        : current
+                );
             }
         } catch (error: unknown) {
-            setMessages((current) => [
-                ...current,
-                {
-                    id: `e-${Date.now()}`,
-                    isUser: false,
-                    text: error instanceof Error ? error.message : '发送失败，请稍后重试',
-                },
-            ]);
+            if (isCurrentThread()) {
+                setMessages((current) =>
+                    isCurrentThread()
+                        ? current.map((message) =>
+                              message.id === assistantMessageId
+                                  ? {
+                                        ...message,
+                                        text:
+                                            error instanceof Error
+                                                ? error.message
+                                                : '发送失败，请稍后重试',
+                                        status: 'failed',
+                                        isThinking: false,
+                                    }
+                                  : message
+                          )
+                        : current
+                );
+            }
         } finally {
             setSending(false);
+            setSendingThreadId('');
         }
     };
 
@@ -294,6 +591,19 @@ export default function App() {
             event.preventDefault();
             void sendMessage();
         }
+    };
+
+    const scrollToSource = (messageId: string, chunkIndex: number) => {
+        const references = document.getElementById(`references-${messageId}`);
+        if (!(references instanceof HTMLDetailsElement)) return;
+        references.open = true;
+        window.requestAnimationFrame(() => {
+            const source = document.getElementById(`chunk-${messageId}-${chunkIndex}`);
+            if (!source) return;
+            source.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            source.classList.add('highlight-chunk');
+            window.setTimeout(() => source.classList.remove('highlight-chunk'), 2000);
+        });
     };
 
     return (
@@ -379,12 +689,7 @@ export default function App() {
                                         key={thread.thread_id}
                                         type="button"
                                         className={`recent-thread ${thread.thread_id === threadId ? 'active' : ''}`}
-                                        onClick={() => {
-                                            setThreadId(thread.thread_id);
-                                            setMessages([]);
-                                            setSelectedMode(null);
-                                            setNav('chat');
-                                        }}
+                                        onClick={() => void openThread(thread.thread_id)}
                                     >
                                         <span className="recent-dot" aria-hidden="true" />
                                         <span className="recent-copy">
@@ -502,13 +807,7 @@ export default function App() {
                                                 key={thread.thread_id}
                                                 type="button"
                                                 className={`history-item ${thread.thread_id === threadId ? 'active' : ''}`}
-                                                onClick={() => {
-                                                    setThreadId(thread.thread_id);
-                                                    setMessages([]);
-                                                    setSelectedMode(null);
-                                                    setHistoryOpen(false);
-                                                    setNav('chat');
-                                                }}
+                                                onClick={() => void openThread(thread.thread_id)}
                                             >
                                                 <strong>{thread.title || '未命名对话'}</strong>
                                                 <small>{thread.message_count} 条消息</small>
@@ -756,11 +1055,89 @@ export default function App() {
                                         messages.map((message) => (
                                             <article
                                                 key={message.id}
+                                                id={`message-${message.id}`}
                                                 className={
                                                     message.isUser ? 'chat-message chat-message-user' : 'chat-message'
                                                 }
                                             >
-                                                <div className="message-bubble">{message.text}</div>
+                                                <div
+                                                    className="message-bubble"
+                                                    aria-live={message.isThinking ? 'polite' : undefined}
+                                                >
+                                                    {message.text || (message.isThinking ? '正在处理…' : '')}
+                                                </div>
+                                                {!message.isUser &&
+                                                    Boolean(message.ragTrace?.retrieved_chunks?.length) && (
+                                                        <details
+                                                            className="references-details references-section"
+                                                            id={`references-${message.id}`}
+                                                        >
+                                                            <summary className="references-title">
+                                                                <span>
+                                                                    <i
+                                                                        className="fa-solid fa-link"
+                                                                        aria-hidden="true"
+                                                                    />
+                                                                    参考来源
+                                                                </span>
+                                                                <small>
+                                                                    {message.ragTrace?.retrieved_chunks?.length} 个片段
+                                                                </small>
+                                                            </summary>
+                                                            <ul className="sources-list references-list">
+                                                                {message.ragTrace?.retrieved_chunks?.map(
+                                                                    (source, index) => (
+                                                                        <li
+                                                                            className="source-item"
+                                                                            id={`chunk-${message.id}-${index + 1}`}
+                                                                            key={`${source.filename}:${source.chunk_id}`}
+                                                                        >
+                                                                            <button
+                                                                                className="ref-index"
+                                                                                type="button"
+                                                                                aria-label={`跳转到引用 ${index + 1}`}
+                                                                                onClick={() =>
+                                                                                    scrollToSource(
+                                                                                        message.id,
+                                                                                        index + 1
+                                                                                    )
+                                                                                }
+                                                                            >
+                                                                                {index + 1}
+                                                                            </button>
+                                                                            <div className="source-content">
+                                                                                <div className="source-title-line">
+                                                                                    <strong className="source-file">
+                                                                                        <i
+                                                                                            className="fa-regular fa-file-lines"
+                                                                                            aria-hidden="true"
+                                                                                        />
+                                                                                        {source.filename}
+                                                                                    </strong>
+                                                                                    {source.page_number && (
+                                                                                        <span className="source-page">
+                                                                                            第 {source.page_number} 页
+                                                                                        </span>
+                                                                                    )}
+                                                                                </div>
+                                                                                <div className="source-meta-line">
+                                                                                    RRF #
+                                                                                    {source.rrf_rank || index + 1}
+                                                                                    {source.rerank_score != null &&
+                                                                                        ` · 精排 ${source.rerank_score.toFixed(2)}`}
+                                                                                </div>
+                                                                                {source.text && (
+                                                                                    <p className="source-excerpt">
+                                                                                        {source.text}
+                                                                                    </p>
+                                                                                )}
+                                                                            </div>
+                                                                        </li>
+                                                                    )
+                                                                )}
+                                                            </ul>
+                                                        </details>
+                                                    )}
                                             </article>
                                         ))
                                     )}
@@ -841,22 +1218,14 @@ export default function App() {
                                     </div>
                                 </div>
                             </section>
-                            <aside className="knowledge-context">
-                                <div className="context-header">
-                                    <div>
-                                        <span className="panel-eyebrow">Live evidence</span>
-                                        <h2>知识脉络</h2>
-                                    </div>
-                                    <span className="context-status">
-                                        <i className="fa-solid fa-circle-check" /> 待命
-                                    </span>
-                                </div>
-                                <div className="context-empty">
-                                    <img src={emptyEvidence} className="context-empty-illustration" alt="" />
-                                    <h3>等待一次提问</h3>
-                                    <p>检索步骤、证据置信度和引用来源会实时出现在这里。</p>
-                                </div>
-                            </aside>
+                            <LiveEvidencePanel
+                                threadId={threadId}
+                                messages={messages}
+                                runState={runState}
+                                isSending={sending && sendingThreadId === threadId}
+                                eventError={eventError}
+                                onSourceClick={scrollToSource}
+                            />
                         </div>
                     ) : (
                         <section
