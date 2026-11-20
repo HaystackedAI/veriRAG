@@ -125,7 +125,23 @@ test('admin can enable web research from the capability control page', async ({ 
       provider: 'tavily-keyless',
       api_key_required: false,
     },
-    sql_assistant: {},
+    sql_assistant: {
+      enabled: false,
+      dsn_secret_name: 'SQL_ASSISTANT_DSN',
+      dsn_configured: false,
+      expected_role: '',
+      allowed_schemas: [],
+      allowed_tables: [],
+      sensitive_columns: [],
+      statement_timeout_seconds: 10,
+      max_rows: 200,
+      max_result_bytes: 262144,
+      max_estimated_cost: 100000,
+      max_estimated_rows: 100000,
+      max_estimated_bytes: 8388608,
+      catalog_cache_ttl_seconds: 300,
+      updated_at: '2026-11-19T00:00:00Z',
+    },
     skills: [],
     custom_tools: [],
     builtin_tools: [],
@@ -180,7 +196,7 @@ test('admin can enable web research from the capability control page', async ({ 
   await expect(page.getByText(/不需要 API Key/)).toBeVisible();
   await page.getByRole('button', { name: '启用网络研究' }).click();
 
-  await expect(page.getByText('网络研究已启用。')).toBeVisible();
+  await expect(page.getByText('Tavily Keyless Web Research 已启用')).toBeVisible();
   expect(updatePayload).toEqual({ enabled: true });
 
   await page.getByRole('button', { name: '智能对话' }).click();
