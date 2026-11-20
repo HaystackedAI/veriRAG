@@ -12,6 +12,9 @@ import {
 } from '@/auth/session';
 import { createThread, getThreadMessages, listThreads } from '@/threads/threadClient';
 import { createRun, getRun } from '@/runs/runClient';
+import { getCapabilityCatalog } from '@/capabilities/capabilityClient';
+import { createWebResearchMessage } from '@/capabilities/webResearchMessage';
+import type { CapabilityAvailabilityReason, CapabilitySkill } from '@/types/capabilities';
 import type { ThreadSummary } from '@/types/threads';
 import superMewMark from '@/assets/images/supermew-mark.png';
 import superMewMascot from '@/assets/images/supermew-mascot.webp';
@@ -45,6 +48,14 @@ export default function App() {
     const [input, setInput] = useState('');
     const [sending, setSending] = useState(false);
     const [historyOpen, setHistoryOpen] = useState(false);
+    const [selectedMode, setSelectedMode] = useState<'web-research' | null>(null);
+    const [webResearchSkill, setWebResearchSkill] = useState<CapabilitySkill | null>(null);
+    const [webResearchStatus, setWebResearchStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>(
+        'idle'
+    );
+    const [webResearchAvailabilityReason, setWebResearchAvailabilityReason] =
+        useState<CapabilityAvailabilityReason>(null);
+    const [webResearchError, setWebResearchError] = useState('');
 
     useEffect(() => {
         document.documentElement.dataset.theme = theme;
@@ -75,6 +86,42 @@ export default function App() {
             void listThreads()
                 .then(setThreads)
                 .catch(() => undefined);
+    }, [session?.username]);
+
+    useEffect(() => {
+        let current = true;
+        setSelectedMode(null);
+        setWebResearchSkill(null);
+        setWebResearchAvailabilityReason(null);
+        setWebResearchError('');
+
+        if (!session) {
+            setWebResearchStatus('idle');
+            return () => {
+                current = false;
+            };
+        }
+
+        setWebResearchStatus('loading');
+        void getCapabilityCatalog()
+            .then((catalog) => {
+                if (!current) return;
+                const skill = catalog.skills.find((item) => item.name === 'web-research') || null;
+                setWebResearchSkill(skill);
+                setWebResearchAvailabilityReason(skill?.availability_reason ?? 'not_configured');
+                setWebResearchStatus('ready');
+            })
+            .catch((error: unknown) => {
+                if (!current) return;
+                setWebResearchError(
+                    error instanceof Error ? error.message : '网络研究能力目录加载失败。'
+                );
+                setWebResearchStatus('error');
+            });
+
+        return () => {
+            current = false;
+        };
     }, [session?.username]);
 
     useEffect(() => {
@@ -136,6 +183,10 @@ export default function App() {
     const sendMessage = async () => {
         const text = input.trim();
         if (!text || !session || sending) return;
+        const executionMessage =
+            selectedMode === 'web-research' && webResearchSkill
+                ? createWebResearchMessage(text, webResearchSkill.activation)
+                : text;
         setSending(true);
         setInput('');
         setMessages((current) => [...current, { id: `u-${Date.now()}`, isUser: true, text }]);
@@ -161,7 +212,10 @@ export default function App() {
             }
             const created = await createRun(
                 targetThreadId,
-                { message: text, idempotency_key: globalThis.crypto?.randomUUID?.() || `${Date.now()}` },
+                {
+                    message: executionMessage,
+                    idempotency_key: globalThis.crypto?.randomUUID?.() || `${Date.now()}`,
+                },
                 session.access_token
             );
             let run = created.run;
@@ -299,6 +353,7 @@ export default function App() {
                                         onClick={() => {
                                             setThreadId(thread.thread_id);
                                             setMessages([]);
+                                            setSelectedMode(null);
                                             setNav('chat');
                                         }}
                                     >
@@ -421,6 +476,7 @@ export default function App() {
                                                 onClick={() => {
                                                     setThreadId(thread.thread_id);
                                                     setMessages([]);
+                                                    setSelectedMode(null);
                                                     setHistoryOpen(false);
                                                     setNav('chat');
                                                 }}
@@ -593,7 +649,12 @@ export default function App() {
                                             <h2>你好，我是喵喵。</h2>
                                             <p>我会检索知识库、展示处理过程，并把关键结论链接回原始证据。</p>
                                             <div className="welcome-mode-grid" aria-label="快速选择能力">
-                                                <button type="button" className="active" onClick={() => setNav('chat')}>
+                                                <button
+                                                    type="button"
+                                                    className={selectedMode ? '' : 'active'}
+                                                    aria-pressed={!selectedMode}
+                                                    onClick={() => setSelectedMode(null)}
+                                                >
                                                     <span>
                                                         <i className="fa-regular fa-message" />
                                                     </span>
@@ -607,12 +668,39 @@ export default function App() {
                                                     <strong>知识库</strong>
                                                     <small>检索私有知识</small>
                                                 </button>
-                                                <button type="button" onClick={() => setNav('chat')}>
+                                                <button
+                                                    type="button"
+                                                    className={selectedMode === 'web-research' ? 'active' : ''}
+                                                    aria-pressed={selectedMode === 'web-research'}
+                                                    disabled={
+                                                        webResearchStatus === 'loading' ||
+                                                        !webResearchSkill?.available
+                                                    }
+                                                    title={
+                                                        webResearchStatus === 'error'
+                                                            ? webResearchError
+                                                            : webResearchAvailabilityReason === 'permission_required'
+                                                              ? '当前账号权限不足'
+                                                              : webResearchAvailabilityReason === 'not_configured'
+                                                                ? '网络研究运行配置尚未就绪'
+                                                                : undefined
+                                                    }
+                                                    onClick={() => setSelectedMode('web-research')}
+                                                >
                                                     <span>
                                                         <i className="fa-solid fa-globe" />
                                                     </span>
                                                     <strong>网络研究</strong>
-                                                    <small>查询公开来源</small>
+                                                    <small>
+                                                        {webResearchStatus === 'loading'
+                                                            ? '正在检查可用性…'
+                                                            : webResearchSkill?.available
+                                                              ? '查询公开来源'
+                                                              : webResearchAvailabilityReason ===
+                                                                  'permission_required'
+                                                                ? '当前账号权限不足'
+                                                                : '运行配置尚未就绪'}
+                                                    </small>
                                                 </button>
                                                 <button type="button" onClick={() => setNav('chat')}>
                                                     <span>
@@ -629,6 +717,11 @@ export default function App() {
                                                     <small>隔离执行代码</small>
                                                 </button>
                                             </div>
+                                            {webResearchStatus === 'error' && (
+                                                <p className="mode-catalog-error" role="status">
+                                                    {webResearchError}
+                                                </p>
+                                            )}
                                         </section>
                                     ) : (
                                         messages.map((message) => (
@@ -644,6 +737,33 @@ export default function App() {
                                     )}
                                 </div>
                                 <div className="input-area-wrapper">
+                                    {selectedMode === 'web-research' && (
+                                        <div className="selected-mode-banner">
+                                            <i className="fa-solid fa-globe" aria-hidden="true" />
+                                            <span>网络研究 · 查询公开来源</span>
+                                            <button
+                                                type="button"
+                                                onClick={() => setSelectedMode(null)}
+                                                aria-label="切回智能对话"
+                                            >
+                                                切回智能对话
+                                            </button>
+                                        </div>
+                                    )}
+                                    {selectedMode !== 'web-research' && messages.length > 0 && (
+                                        <div className="selected-mode-banner">
+                                            <i className="fa-solid fa-globe" aria-hidden="true" />
+                                            <span>需要查询公开来源？</span>
+                                            <button
+                                                type="button"
+                                                disabled={!webResearchSkill?.available}
+                                                onClick={() => setSelectedMode('web-research')}
+                                                aria-label="切换到网络研究"
+                                            >
+                                                网络研究
+                                            </button>
+                                        </div>
+                                    )}
                                     <div className="input-area">
                                         <button
                                             className="attach-btn"
@@ -659,7 +779,11 @@ export default function App() {
                                             value={input}
                                             onChange={(event) => setInput(event.target.value)}
                                             onKeyDown={onInputKeyDown}
-                                            placeholder="和喵喵说点什么吧..."
+                                            placeholder={
+                                                selectedMode === 'web-research'
+                                                    ? '描述要调研的公开问题…'
+                                                    : '和喵喵说点什么吧...'
+                                            }
                                             rows={1}
                                         />
                                         <button
@@ -677,7 +801,11 @@ export default function App() {
                                         </button>
                                     </div>
                                     <div className="input-footer">
-                                        <span>SuperMew · 可信知识工作台</span>
+                                        <span>
+                                            {selectedMode === 'web-research'
+                                                ? '网页信息可能过时，请核对来源与发布时间。'
+                                                : 'SuperMew · 可信知识工作台'}
+                                        </span>
                                         <span>
                                             <kbd>Enter</kbd> 发送 · <kbd>Shift</kbd> + <kbd>Enter</kbd> 换行
                                         </span>

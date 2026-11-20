@@ -1346,6 +1346,46 @@ html[data-theme='light'] .welcome-avatar {
   font-size: var(--font-micro);
 }
 
+.mode-catalog-error {
+  margin: 10px 0 0;
+  color: var(--danger);
+  font-size: var(--font-caption);
+}
+
+.selected-mode-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text-soft);
+  background: var(--surface-soft);
+  font-size: var(--font-caption);
+}
+
+.selected-mode-banner > i {
+  color: var(--mint);
+}
+
+.selected-mode-banner > span {
+  flex: 1;
+}
+
+.selected-mode-banner button {
+  padding: 5px 8px;
+  border-radius: 7px;
+  color: var(--mint);
+  background: var(--surface);
+  cursor: pointer;
+  font-size: var(--font-micro);
+}
+
+.selected-mode-banner button:disabled {
+  color: var(--muted);
+}
+
 .welcome-capabilities {
   display: flex;
   flex-wrap: wrap;
