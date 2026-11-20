@@ -1,3 +1,19 @@
+"""
+输入 messages: [历史..., HumanMessage(用户这句话)]
+        │
+        ▼
+ ┌─► 调用 LLM(带 system_prompt + 可见工具的描述)
+ │       │
+ │       ├─ 返回文本            → 这就是最终回答,循环结束
+ │       └─ 返回 tool_call      → 例如 search_knowledge_base(query="...")
+ │                 │
+ │                 ▼
+ │          执行工具(守卫/审批检查在这里,approved_tools 起作用)
+ │                 │
+ │                 ▼
+ │          工具结果作为 ToolMessage 追加到 messages
+ └─────────────────┘ 再调一次 LLM
+"""
 from __future__ import annotations
 
 import asyncio
@@ -242,10 +258,7 @@ class AgentRuntime:
             raise self._timeout_error(exc) from exc
         return self._finish(extract_agent_content(result))
 
-    async def astream(
-        self,
-        request: AgentRuntimeInput,
-    ) -> AsyncIterator[AgentRuntimeEvent]:
+    async def astream(self,        request: AgentRuntimeInput,) -> AsyncIterator[AgentRuntimeEvent]:
         full_response = ""
         final_state: object | None = None
         terminal_buffering = False

@@ -29,24 +29,16 @@ class RunService:
         self.model_control = model_control
         self._allow_implicit_threads = _allow_implicit_threads
 
-    def create_run(
-        self,
-        *,
-        username: str,
-        thread_id: str,
-        message: str,
-        idempotency_key: str,
+    # 记录即将运行的环境和model
+    def create_run(self,*,
+        username: str,thread_id: str,message: str,idempotency_key: str,
         expected_thread_version: int | None = None,
         multitask_strategy: MultitaskStrategy | str | None = None,
         on_disconnect: str | None = None,
-        tenant_id: str = "default",
-        channel: str = "run",
-        approved_tools: frozenset[str] = frozenset(),
+        tenant_id: str = "default", channel: str = "run",        approved_tools: frozenset[str] = frozenset(),
     ) -> RunReservation:
         compact_message = message.strip()
-        model_snapshot = self.model_control.runtime_snapshot(
-            required_roles=frozenset({ModelRole.ANSWER})
-        )
+        model_snapshot = self.model_control.runtime_snapshot(required_roles=frozenset({ModelRole.ANSWER}))
         answer_model = model_snapshot.require(ModelRole.ANSWER)
         return self.repository.reserve(
             username=username,

@@ -17,13 +17,7 @@ from backend.runs.resume import resume_coordinator
 from backend.runs.service import service
 from backend.runs.state import RunStatus
 from backend.schemas.events import RunEventsResponse
-from backend.schemas.runs import (
-    RunCreateRequest,
-    RunCreateResponse,
-    RunResumeRequest,
-    RunResumeResponse,
-    RunResponse,
-)
+from backend.schemas.runs import (RunCreateRequest,RunCreateResponse,RunResumeRequest,RunResumeResponse,RunResponse,)
 from backend.threads.contracts import ThreadId
 
 
@@ -138,15 +132,8 @@ def _stream_response(
     )
 
 
-@router.post("/threads/{thread_id}/runs",
-    response_model=RunCreateResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def create_run(
-    thread_id: ThreadId,
-    request: RunCreateRequest,
-    current_user: User = Depends(get_current_user),
-):
+@router.post("/threads/{thread_id}/runs", response_model=RunCreateResponse, status_code=status.HTTP_201_CREATED,)
+async def create_run(thread_id: ThreadId,    request: RunCreateRequest,    current_user: User = Depends(get_current_user),):
     reservation = await _reserve_run(
         user=current_user,
         thread_id=thread_id,

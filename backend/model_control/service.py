@@ -169,15 +169,9 @@ class ModelControlService:
             username=username,
         )
 
-    def runtime_snapshot(
-        self,
-        *,
-        required_roles: frozenset[ModelRole] = frozenset(),
-    ) -> ModelCatalogSnapshot:
+    def runtime_snapshot(self,*,        required_roles: frozenset[ModelRole] = frozenset(),) -> ModelCatalogSnapshot:
         assigned = self.repository.assignments()
-        enabled = {
-            role: profile for role, profile in assigned.items() if profile.enabled
-        }
+        enabled = {role: profile for role, profile in assigned.items() if profile.enabled}
         missing = sorted(role.value for role in required_roles.difference(enabled))
         if missing:
             raise AppError(
