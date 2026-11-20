@@ -27,6 +27,7 @@ import superMewMascot from '@/assets/images/supermew-mascot.webp';
 import emptyHistory from '@/assets/images/empty-history.webp';
 
 const CapabilityAdminPage = lazy(() => import('@/components/Capabilities/CapabilityAdminPage'));
+const KnowledgeBasePage = lazy(() => import('@/components/Documents/KnowledgeBasePage'));
 
 type Theme = 'dark' | 'light';
 type Nav = 'chat' | 'history' | 'settings' | 'models' | 'capabilities' | 'evaluations';
@@ -648,6 +649,7 @@ export default function App() {
                                 <button
                                     type="button"
                                     className={`nav-btn ${nav === 'settings' ? 'active' : ''}`}
+                                    aria-label="知识库"
                                     onClick={() => setNav('settings')}
                                 >
                                     <i className="fa-regular fa-bookmark" />
@@ -1234,7 +1236,10 @@ export default function App() {
                                     ? 'chat-area capability-admin-host'
                                     : 'chat-area'
                             }
-                            style={{ width: '100%', padding: nav === 'capabilities' ? 0 : 32 }}
+                            style={{
+                                width: '100%',
+                                padding: nav === 'capabilities' || nav === 'settings' ? 0 : 32,
+                            }}
                         >
                             {nav === 'capabilities' ? (
                                 <Suspense fallback={<div role="status">正在加载能力管理…</div>}>
@@ -1243,13 +1248,13 @@ export default function App() {
                                         onWebResearchUpdated={refreshWebResearchCapability}
                                     />
                                 </Suspense>
+                            ) : nav === 'settings' ? (
+                                <Suspense fallback={<div role="status">正在加载知识库…</div>}>
+                                    <KnowledgeBasePage key={session?.username} />
+                                </Suspense>
                             ) : (
                                 <h1>
-                                    {nav === 'settings'
-                                        ? '知识库'
-                                        : nav === 'models'
-                                          ? '模型中心'
-                                          : 'RAG 评估'}
+                                    {nav === 'models' ? '模型中心' : 'RAG 评估'}
                                 </h1>
                             )}
                         </section>

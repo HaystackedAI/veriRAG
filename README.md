@@ -88,8 +88,8 @@ SuperMew 不把一次聊天请求视为一个不可恢复的 HTTP 调用，而�
 
 当前产品化入口包括：
 
-- **Knowledge Base**：使用当前发布的 Document Version 进行 RAG 问答，并展示检索、评判、重写、
-  合并与引用信息。
+- **Knowledge Base**：管理员可在知识库页面上传、搜索和删除文档，并查看持久化索引与清理进度；
+  对话使用当前发布的 Document Version 进行 RAG 问答，展示检索、评判、重写、合并与引用信息。
 - **Web Research**：调查公开问题、时间范围或来源偏好。只有 feature flag、Tavily Keyless
   Runtime、角色与受限公网策略同时满足时才可用，外部事实使用当前 Run 的 Source ID 引用。
 - **SQL Assistant**：以自然语言描述指标、维度、筛选条件和时间范围，仅查询 allowlist 内的
